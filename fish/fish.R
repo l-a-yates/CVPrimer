@@ -1,20 +1,25 @@
+#----------------------------------------------------------------------------
+#
+# Cross validation for model selection: a primer with examples from ecology.
+#
+# Code for example 2: Pinfish growth models
+#
+# Authors: L.A.Yates, ...
+#
+#----------------------------------------------------------------------------
 
 rm(list=ls())
 
 library(tidyverse)
 library(fishmethods)
-library(rstanarm)
 library(FlexParamCurve)
 library(RColorBrewer)
 
 source("fish_functions_flex.R")
 source("fish_functions_nlme.R")
 
-MAX_CORES <- 20
+MAX_CORES <- 30
 
-# Analysis steps
-# 1) Compare the four candidate growth functions on the population (Gompertz, logistic, vonB, Richards)
-# 2) For the best function, compare different model structure w.r.t sex (fixed effect) and haul (random/fixed effect)
 
 #-------------------------
 # Load and prepare data
@@ -35,12 +40,12 @@ fishData <- fishData %>% filter(haul != "TBD930066") # remove outlier
 fishData$haul <-  factor(fishData$haul)
 
 # constants
-n.haul <- length(unique(fishData$haul))
-n <- nrow(fishData)
+#n.haul <- length(unique(fishData$haul))
+#n <- nrow(fishData)
 
-#----------------------------------------------------
-# fit 4 growth function for population-level analysis
-#----------------------------------------------------
+#-----------------------------------------------------
+# fit 4 growth functions for population-level analysis
+#-----------------------------------------------------
 if(F){
   # 4 par model: Richards; 3 par models: von Bertanlanffy, logistic, Gompertz
   m <- fitGrowthAll(fishData)
@@ -58,25 +63,25 @@ if(F){
 # a quick within sample fit
 f1 <- fit.re(fishData)
 
-# marginal AIC only (random effects are ignored in parameter count!)
+# marginal AIC only (random effects are (erroneously) ignored in parameter count!)
 # i.e. numbers of parameters = number of fixed effects; check: YES
 f1 %>% map_dbl(AIC) %>% {. - min(.)} 
 p_fe <- f1 %>% {map_dbl(.,AIC)*0.5 + map_dbl(.,logLik)}; p_fe
 
 # cross validation estimates
-f_cv_10 <- kfcv(fishData, fit.re, 10, bias.adjust = T)
-f_cv_10_nba <- kfcv(fishData, fit.re, 10, bias.adjust = F)
-f_cv_loo <- loocv(fishData, fit.re)
+f_cv_loo <- loocv(fishData, fit.re)  # 15 seconds wth 30 cores
+f_cv_10 <- kfcv(fishData, fit.re, 10, bias.adjust = T) # 2 seconds with 10 cores
+f_cv_10_nba <- kfcv(fishData, fit.re, 10, bias.adjust = F) # 2 seconds with 10 cores
 
 # compare p_loo differences to the number of fixed effects
 tibble(p_loo_dif = f_cv_loo$p_loo %>% {. - min(.)}, p_fe_diff = p_fe - 5)
 
-# compare bias-corrected estimates (almost identical)
-f_cv_loo_nba <- loocv(fishData, fit.re, bias.adjust = F)
+# compare bias-adjusted loo estimates (almost identical)
+f_cv_loo_nba <- loocv(fishData, fit.re, bias.adjust = F) # 15 seconds wth 30 cores
 (f_cv_loo[,-1] - f_cv_loo_nba[,-1]) %>% bind_cols(model = f_cv_loo$model, .)
 
 
-#f1_mse <- loocv(fishData, fit.re, score = "mse")
+# prepares returned CV fits for plotting
 prep_df <- function(df){
   df %>% 
     mutate(fun = c(rep("vB",4),rep("G",4),rep("log",4)), 
@@ -101,7 +106,7 @@ f_cv_loo %>%
   theme_bw() +
   scale_color_brewer(type = "div", palette = "Dark2")+
   geom_point(aes(y = eld_diff), shape = 1, size = 6, col = "grey40", data = ~ .x %>% filter(model == "vB|0")) +
-  labs(x = NULL, title = "LOO estimates for fish growth models", y = "eld_diff")
+  labs(x = NULL, title = "LOO estimates for fish growth models", y = expression(Delta*"ELPD"))
 
 # faceted plot
 f_cv_loo %>% 
@@ -113,13 +118,14 @@ f_cv_loo %>%
   geom_linerange(aes(ymin = eld_diff - se_mod, ymax = eld_diff + se_mod, col = fun), show.legend = F) +
   theme_bw() +
   theme(strip.placement = "outside", panel.border = element_blank(), 
-        strip.background = element_rect(), axis.ticks.x = element_blank() ) +
+        strip.background = element_rect(), axis.ticks.x = element_blank(),
+        strip.text = element_text(size = 11), strip.background.x = element_rect(linetype = 0, fill = "grey90")) +
   facet_wrap(~fun,nrow = 1, strip.position = "bottom", labeller = labeller(fun = fun_labels)) +
   geom_point(aes(y = eld_diff), shape = 1, size = 6, col = "grey40", data = ~ .x %>% filter(model == "vB.0")) +
   scale_color_brewer(type = "div", palette = "Dark2")+
-  labs(x = NULL, title = "LOO estimates for fish-growth models", y = "Expected log density")
+  labs(x = NULL, title = "LOO estimates for fish-growth models", y = expression(Delta*"ELPD"))
 
-#ggsave("pinfish_modsel_loo_v1b.pdf", width = 180, height = 100, units = "mm", device = cairo_pdf())
+#ggsave("plots/pinfish_modsel_loo_v2.pdf", width = 180, height = 100, units = "mm", device = cairo_pdf()); dev.off()
 
 # faceted plot comparing to score estimators
 alt_data <- f_cv_10 %>% mutate(score = eld_diff, se = se_mod)
@@ -155,8 +161,7 @@ f_cv_loo %>%
   labs(x = NULL, title = "CV estimates for fish growth models", y = "score",
        subtitle = "A comparison between LOO and bias-adjusted 10-fold CV")
 
-ggsave("pinfish_modsel_compare_ba_v1.pdf", width = 210, height = 160, units = "mm", device = cairo_pdf()); dev.off()
-
+#ggsave("pinfish_modsel_compare_ba_v1.pdf", width = 210, height = 160, units = "mm", device = cairo_pdf()); dev.off()
 
 
 #----------------------------------------------------------
@@ -183,12 +188,6 @@ display.brewer.pal(n = 8, name = 'Dark2')
 
 f2_ws <- fit.re.fe.0(fishData)
 f2_ws %>% map_dbl(AIC) %>% {. - min(.)} # delta AIC: completely wrong!
-
-eff <- tibble(Fixed = f2_ws$fe %>% coef %>% {.[str_starts(names(.),"Linf")]},
-       Random = f2_ws$re %>% coef %>% pull(Linf),
-       haul = factor(1:length(Fixed)))
-
-
 
 eff <- tibble(Fixed = f2_ws$fe %>% coef %>% {.[str_starts(names(.),"Linf")]},
        Random = f2_ws$re %>% coef %>% pull(Linf)) %>% 
@@ -227,10 +226,6 @@ hauls_ordered <- f2_ws$re %>% coef %>% arrange(Linf) %>% rownames
 Linfs <- f2_ws$re %>% coef %>% arrange(Linf) %>% pull(Linf)
 names(Linfs) <- hauls_ordered
 
-fishData$haul[1:5]
-Linfs[as.character(fishData$haul[1:5])]
-
-
 curve_data <- hauls_ordered %>% 
   map_dfr(~ tibble(haul = .x, 
                    age = xs,
@@ -251,7 +246,7 @@ curve_data %>%
   theme(legend.position = "none") +
   labs(x = "Age (years)", y ="Length (mm)", title = "Pinfish growth data")
   
-ggsave("pinfish_data_plot_v1.pdf", width = 180, height = 110, units = "mm", device = cairo_pdf())
+#ggsave("pinfish_data_plot_v1.pdf", width = 180, height = 110, units = "mm", device = cairo_pdf())
 
 
 
