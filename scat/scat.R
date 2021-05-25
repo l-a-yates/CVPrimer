@@ -19,6 +19,8 @@ run_date <- "2021_05_25"
 save_dir <- paste0("fits_",run_date,"/")
 if(!dir.exists(save_dir)) dir.create(save_dir)
 
+run <- F # run or load model fits
+
 #scat %>% select(where(is_double)) %>% cor
 vars <- names(scat %>% select(-y)); vars
 
@@ -28,8 +30,16 @@ vars <- names(scat %>% select(-y)); vars
 
 set.seed(770) # sample(1e4,1)
 cv_data_1 <- vfold_cv(scat,10,50) %>% mutate(thresh_glm = 0.5) # data for 10-fold CV repeated 100 times
-varsel_tss_1 <- step_glm(vars, cv_data_1, metric = "tss") # approx 2 mins with 45 cores
-varsel_log_density_1 <- step_glm(vars, cv_data_1, metric = "log_density") 
+
+if(run){
+  varsel_tss_1 <- step_glm(vars, cv_data_1, metric = "tss") # approx 2 mins with 45 cores
+  varsel_log_density_1 <- step_glm(vars, cv_data_1, metric = "log_density") 
+  saveRDS(varsel_tss_1, paste0(save_dir,"varsel_tss_1_",run_date,".rds"))
+  saveRDS(varsel_log_density_1, paste0(save_dir,"varsel_log_density_1_",run_date,".rds"))
+} else{
+  varsel_tss_1 <- readRDS(paste0(save_dir,"varsel_tss_1_",run_date,".rds"))
+  varsel_log_density_1 <- readRDS(paste0(save_dir,"varsel_log_density_1_",run_date,".rds"))
+}
 
 
 tss_data_1 <- varsel_tss_1$metric_step %>% 
@@ -63,15 +73,20 @@ plot_model_comparisons(ll_plot_data_1, "se_mod") +
 set.seed(7193) # sample(1e4,1)
 cv_data_2 <- nested_cv(scat, outside = vfold_cv(v = 10, repeats = 50), inside = vfold_cv(v = 10))
 
-
-cv_data_2$splits %>% assessment()
 # specify RF hyper-parameters
 ntree <- 800
 mtry_vec <- 1:(ncol(scat)-1)
 
 # tune models 
-rf_tune_values <- tune_rf(cv_data_2, mtry_vec, ntree)  # 1:43 seconds for 50 repeats with 45 cores
-glm_tune_values <- tune_glm(cv_data_2, vars) # 1:38 seconds for 50 repeats with 45 cores
+if(run){
+  rf_tune_values <- tune_rf(cv_data_2, mtry_vec, ntree)  # 1:43 seconds for 50 repeats with 45 cores
+  glm_tune_values <- tune_glm(cv_data_2, vars) # 1:38 seconds for 50 repeats with 45 cores
+  saveRDS(glm_tune_values, paste0(save_dir,"glm_tune_values_",run_date,".rds"))
+  saveRDS(rf_tune_values, paste0(save_dir,"rf_tune_values_",run_date,".rds"))
+} else{
+  glm_tune_values <- readRDS(paste0(save_dir,"glm_tune_values_",run_date,".rds"))
+  rf_tune_values <- readRDS(paste0(save_dir,"rf_tune_values_",run_date,".rds"))
+}
 
 # add tuned parameters to cv_data
 cv_data_2$thresh_rf <- rf_tune_values$threshold
@@ -80,9 +95,19 @@ cv_data_2$mtry_rf <- rf_tune_values$mtry
 cv_data_2$form_glm <- glm_tune_values %>% map("form_glm")
 
 # fit models
-fits_rf_best <- fit_rf(cv_data_2, ntree = ntree, type = "best") # 3 seconds with 45 cores
-fits_rf_all<- fit_rf(cv_data_2, ntree = ntree, type = "all") # 2 seconds with 45 cores
-fits_glm <- fit_confusion_glm(cv_data_2)
+if(run){
+  fits_rf_best <- fit_rf(cv_data_2, ntree = ntree, type = "best") # 3 seconds with 45 cores
+  fits_rf_all<- fit_rf(cv_data_2, ntree = ntree, type = "all") # 2 seconds with 45 cores
+  fits_glm <- fit_confusion_glm(cv_data_2)
+  saveRDS(fits_rf_best, paste0(save_dir,"fits_rf_best_",run_date,".rds"))
+  saveRDS(fits_rf_all, paste0(save_dir,"fits_rf_all_",run_date,".rds"))
+  saveRDS(fits_glm, paste0(save_dir,"fits_glm_",run_date,".rds"))
+} else {
+  fits_rf_best <- readRDS(paste0(save_dir,"fits_rf_best_",run_date,".rds"))
+  fits_rf_all <- readRDS(paste0(save_dir,"fits_rf_all_",run_date,".rds"))
+  fits_glm <- readRDS(paste0(save_dir,"fits_glm_",run_date,".rds"))
+}
+
 
 # plot stage 2 results
 tss_data_2 <- tibble(glm = fits_glm$metric,

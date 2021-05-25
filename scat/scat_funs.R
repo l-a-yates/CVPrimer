@@ -15,35 +15,6 @@ prep_data <- function(data){
 }
 
 
-step_gam <- function(v_num, v_fac, cv_data, metric = "tss", k = 4){
-  #if(metric == "log_density") fit_fun <- fit_ll_glm
-  if(metric == "tss") fit_fun <- fit_confusion_gam
-
-  make_formula <- function(v_num,v_fac, k = k){
-    f_fac <- f_num <- c()
-    if(length(v_num)>0) f_num <- paste("+",paste0("s(",v_num,", k = ", k , ")", collapse = " + "))
-    if(length(v_fac)>0) f_fac <- paste("+",paste(v_fac, collapse = " + "))
-    paste("y ~ 1", f_num,f_fac) %>% as.formula
-  }
-  
-  vars <- c(v_num, v_fac)
-  sel <- c()
-  metric_step <- list()
-  
-  for(step in 1:length(vars)){
-    message(paste("Step:",step))
-    newfits = pbmclapply(setdiff(vars,sel), function(var){
-      fit_fun(cv_data, make_formula(setdiff(c(sel,var),v_fac),setdiff(c(sel,var),v_num), k = k))
-    }, mc.cores = length(setdiff(vars,sel)))
-    best = newfits %>% map("metric") %>% map_dbl(mean) %>% which.max()
-    sel[step] <- setdiff(vars,sel)[best]
-    message(paste("Selected:",sel[step]))
-    metric_step[[step]] <- newfits[[best]]
-  }
-  list(sel = sel, metric_step = metric_step)
-}
-
-
 step_glm <- function(vars, cv_data, metric = "tss"){
   if(metric == "log_density") fit_fun <- fit_ll_glm
   if(metric == "tss") fit_fun <- fit_confusion_glm
@@ -82,24 +53,6 @@ fit_confusion_glm <- function(cv_data, formula = NULL){
     summarise(metric = matrix(c(sum(tp),sum(fn),sum(fp),sum(tn)),2,2) %>% tss) %>% 
     mutate(rep = 1:n())
 }
-
-fit_confusion_gam <- function(cv_data, formula = NULL){
-  get_confusion_matrix <- function(form, split, thresh){
-    mgcv::gam(form, data = analysis(split), family = binomial()) %>% 
-      {tibble(pred = predict(.,newdata = assessment(split), type = "response") >= thresh, 
-              y = assessment(split)$y != levels(assessment(split)$y)[1])} %>% 
-      mutate(across(everything(), ~ .x %>% as.numeric() %>% factor(levels = c(1,0)))) %>% 
-      table %>% {c(tp = .[1,1], fp = .[1,2], fn = .[2,1], tn = .[2,2])}
-  }
-  if(!is.null(formula)) form <- list(formula) else form <- cv_data$form_glm
-  with(cv_data, mapply(get_confusion_matrix, form, splits, thresh_glm, SIMPLIFY = T)) %>% t %>% 
-    as_tibble %>% 
-    bind_cols(rep = cv_data$id, .) %>% 
-    group_by(rep) %>% 
-    summarise(metric = matrix(c(sum(tp),sum(fn),sum(fp),sum(tn)),2,2) %>% tss) %>% 
-    mutate(rep = 1:n())
-}
-
 
 
 fit_ll_glm <- function(cv_data, formula){
@@ -180,43 +133,6 @@ tune_glm <- function(cv_data, vars){
 }
 
 
-tune_gam <- function(cv_data, v_num, v_fac, k){
-  make_formula <- function(v_num,v_fac, k = k){
-    f_fac <- f_num <- c()
-    if(length(v_num)>0) f_num <- paste("+",paste0("s(",v_num,", k = ", k , ")", collapse = " + "))
-    if(length(v_fac)>0) f_fac <- paste("+",paste(v_fac, collapse = " + "))
-    paste("y ~ 1", f_num,f_fac) %>% as.formula
-  }
-  
-  vars <- c(v_num, v_fac)
-  pbmclapply(cv_data_2$inner_resamples, function(sample){
-    sel <- thresh <- c()
-    metric_step = list()
-    
-    for(step in 1:length(vars)){
-      message(paste("Step:",step))
-      newfits = lapply(setdiff(vars,sel), function(var){
-        sample[["splits"]] %>% map(
-          ~ gam(make_formula(setdiff(c(sel,var),v_fac),setdiff(c(sel,var),v_num), k = k), 
-                data = analysis(.x), family = binomial()) %>% 
-            {tibble(probs = predict(.,newdata = assessment(.x), type = "response"), 
-                    y = as.numeric(assessment(.x)$y != levels(assessment(.x)$y)[1]))}
-        ) %>% bind_rows %>% tss_thresh
-      })
-      best = newfits %>% map("tss") %>% map_dbl(mean) %>% which.max()
-      thresh[step] = newfits[[best]][["threshold"]]
-      sel[step] = setdiff(vars,sel)[best]
-      message(paste("Selected:",sel[step]))
-      metric_step[[step]] = newfits[[best]]
-    }
-    best_model = metric_step %>% map_dbl("tss") %>% which.max
-    list(form_glm = make_formula(sel[1:best_model]), 
-         thresh_glm = thresh[best_model])
-  }, mc.cores = MAX_CORES)
-}
-
-
-
 fit_rf <- function(cv_data, ntree = 500, type = c("best","all")){
   make_formula = function(vars) paste("y ~ 1 + ",paste(vars,collapse=" + ")) %>% as.formula()
   type = type[1]
@@ -263,7 +179,93 @@ plot_model_comparisons <- function(plot_data, se_type = c("se_mod", "se_diff", "
 
 
 
-# OLD STUFF
+# GAM stuff - not used
+
+if(F){
+  step_gam <- function(v_num, v_fac, cv_data, metric = "tss", k = 4){
+    #if(metric == "log_density") fit_fun <- fit_ll_glm
+    if(metric == "tss") fit_fun <- fit_confusion_gam
+    
+    make_formula <- function(v_num,v_fac, k = k){
+      f_fac <- f_num <- c()
+      if(length(v_num)>0) f_num <- paste("+",paste0("s(",v_num,", k = ", k , ")", collapse = " + "))
+      if(length(v_fac)>0) f_fac <- paste("+",paste(v_fac, collapse = " + "))
+      paste("y ~ 1", f_num,f_fac) %>% as.formula
+    }
+    
+    vars <- c(v_num, v_fac)
+    sel <- c()
+    metric_step <- list()
+    
+    for(step in 1:length(vars)){
+      message(paste("Step:",step))
+      newfits = pbmclapply(setdiff(vars,sel), function(var){
+        fit_fun(cv_data, make_formula(setdiff(c(sel,var),v_fac),setdiff(c(sel,var),v_num), k = k))
+      }, mc.cores = length(setdiff(vars,sel)))
+      best = newfits %>% map("metric") %>% map_dbl(mean) %>% which.max()
+      sel[step] <- setdiff(vars,sel)[best]
+      message(paste("Selected:",sel[step]))
+      metric_step[[step]] <- newfits[[best]]
+    }
+    list(sel = sel, metric_step = metric_step)
+  }
+  
+  
+  tune_gam <- function(cv_data, v_num, v_fac, k){
+    make_formula <- function(v_num,v_fac, k = k){
+      f_fac <- f_num <- c()
+      if(length(v_num)>0) f_num <- paste("+",paste0("s(",v_num,", k = ", k , ")", collapse = " + "))
+      if(length(v_fac)>0) f_fac <- paste("+",paste(v_fac, collapse = " + "))
+      paste("y ~ 1", f_num,f_fac) %>% as.formula
+    }
+    
+    vars <- c(v_num, v_fac)
+    pbmclapply(cv_data_2$inner_resamples, function(sample){
+      sel <- thresh <- c()
+      metric_step = list()
+      
+      for(step in 1:length(vars)){
+        message(paste("Step:",step))
+        newfits = lapply(setdiff(vars,sel), function(var){
+          sample[["splits"]] %>% map(
+            ~ gam(make_formula(setdiff(c(sel,var),v_fac),setdiff(c(sel,var),v_num), k = k), 
+                  data = analysis(.x), family = binomial()) %>% 
+              {tibble(probs = predict(.,newdata = assessment(.x), type = "response"), 
+                      y = as.numeric(assessment(.x)$y != levels(assessment(.x)$y)[1]))}
+          ) %>% bind_rows %>% tss_thresh
+        })
+        best = newfits %>% map("tss") %>% map_dbl(mean) %>% which.max()
+        thresh[step] = newfits[[best]][["threshold"]]
+        sel[step] = setdiff(vars,sel)[best]
+        message(paste("Selected:",sel[step]))
+        metric_step[[step]] = newfits[[best]]
+      }
+      best_model = metric_step %>% map_dbl("tss") %>% which.max
+      list(form_glm = make_formula(sel[1:best_model]), 
+           thresh_glm = thresh[best_model])
+    }, mc.cores = MAX_CORES)
+  }
+  
+  fit_confusion_gam <- function(cv_data, formula = NULL){
+    get_confusion_matrix <- function(form, split, thresh){
+      mgcv::gam(form, data = analysis(split), family = binomial()) %>% 
+        {tibble(pred = predict(.,newdata = assessment(split), type = "response") >= thresh, 
+                y = assessment(split)$y != levels(assessment(split)$y)[1])} %>% 
+        mutate(across(everything(), ~ .x %>% as.numeric() %>% factor(levels = c(1,0)))) %>% 
+        table %>% {c(tp = .[1,1], fp = .[1,2], fn = .[2,1], tn = .[2,2])}
+    }
+    if(!is.null(formula)) form <- list(formula) else form <- cv_data$form_glm
+    with(cv_data, mapply(get_confusion_matrix, form, splits, thresh_glm, SIMPLIFY = T)) %>% t %>% 
+      as_tibble %>% 
+      bind_cols(rep = cv_data$id, .) %>% 
+      group_by(rep) %>% 
+      summarise(metric = matrix(c(sum(tp),sum(fn),sum(fp),sum(tn)),2,2) %>% tss) %>% 
+      mutate(rep = 1:n())
+  }
+  
+
+}
+
 
 if(F){
 
