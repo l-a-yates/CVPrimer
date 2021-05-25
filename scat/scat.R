@@ -1,8 +1,12 @@
-rm(list=ls())
+
 
 library(tidyverse); library(tidymodels)
 library(pbmcapply); library(randomForest)
+library(mgcv)
 
+rm(list=ls())
+
+MAX_CORES <- 45
 
 #----------
 # Data prep
@@ -10,90 +14,93 @@ library(pbmcapply); library(randomForest)
 
 source("scat_funs.R")
 data(scat,package = "caret") # Morphometrics on scat data for bobcat, coyote and gray fox
-scat <- prep_data(scat) # N.B. Success = canid, Failure = felid
-scat %>% group_by(number) %>% summarise(canid = sum(y=="canid"), felid = sum(y=="felid"))
-scat
-scat <- scat %>% mutate(across("number",as.numeric))
+scat <- prep_data(scat) # N.B. fail = canid (factor-level 1), success = felid (factor-level 2)
 
-#scat <- scat %>% mutate(number = pmin(number,5)) 
-#scat <- scat %>% mutate(number = pmin(number,5) %>% factor(levels = c("1","2","3","4","5"), labels = c("1","2","3","4","5+")))
-#scat <- scat %>% select(-number)
-
-set.seed(3218) # sample(1e4,1)
-cv_data <- vfold_cv(scat,10,100,strata = number, bins = 5)
-
-vars_num <- scat %>% select(where(is.double)) %>% colnames();vars_num
-vars_fac <- setdiff(names(scat)[-1],vars_num) 
-make_form <- function(v_num,v_fac, k = 7) paste("y ~", paste("s(",v_num,", k = ", k , ")", collapse = " + "), " + ", paste(v_fac, collapse = " +")) %>% as.formula()
-make_form(vars_num, vars_fac)
-mgcv::gam(make_form(vars_num, vars_fac), family = binomial(), data = scat) %>% plot
-run_date <- "2021_05_18"
+run_date <- "2021_05_25"
 save_dir <- paste0("fits_",run_date,"/")
+if(!dir.exists(save_dir)) dir.create(save_dir)
+
+#scat %>% select(where(is_double)) %>% cor
+vars <- names(scat %>% select(-y)); vars
+
+#-------------------------------------------------------------------------------
+# Stage 1: use TSS with K-fold CV for variable step selection for logistic model
+#-------------------------------------------------------------------------------
+
+set.seed(770) # sample(1e4,1)
+cv_data_1 <- vfold_cv(scat,10,50) %>% mutate(thresh_glm = 0.5) # data for 10-fold CV repeated 100 times
+varsel_tss_1 <- step_glm(vars, cv_data_1, metric = "tss") # approx 2 mins with 45 cores
+varsel_log_density_1 <- step_glm(vars, cv_data_1, metric = "log_density") 
 
 
-#----------------------------------------
-# tune mtry and threshold using TSS. 
-# Apply to all CV splits & add to cv_data
-#-----------------------------------------
-
-mtry_vec <- 1:(ncol(scat)-1)
-tune_mtry <- cv_data$splits %>% map(analysis) %>% pbmclapply(tune_tss_mtry, mtry_vec = mtry_vec, mc.cores = 40)
-#saveRDS(tune_mtry,paste0(save_dir,"tune_mtry_2021_05_18.rds"))
-#tune_mtry <- readRDS(paste0(save_dir,"tune_mtry_",run_date,".rds"))
-thresh_mtry <- tune_mtry %>% map_dfr(~ .x %>% filter(tss == min(tss)) %>% slice(1) %>% as.vector)
-cv_data$thresh <- thresh_mtry$threshold
-cv_data$mtry <- thresh_mtry$mtry
-
-
-tss_rf <- fit_confusion_rf(cv_data)
-#saveRDS(tss_rf,paste0(save_dir,"tss_rf_2021_05_18.rds"))
-#tss_rf <- readRDS(paste0(save_dir,"tss_rf_2021_05_18.rds"))
-
-#-----------------------------------
-# step selection for logistic models
-#-----------------------------------
-
-if(T){
-  
-  vars <- names(scat %>% select(-y)); vars
-  sel <- c()
-  tss_step <- list()
-  make_formula <- function(vars) paste("y ~ 1 + ",paste(vars,collapse=" + "))
-  
-  for(step in 1:length(vars)){
-    message(paste("Step:",step))
-    newfits = pbmclapply(setdiff(vars,sel), function(var){
-      fit_confusion_glm(make_formula(c(sel,var)),cv_data)
-    }, mc.cores = length(setdiff(vars,sel)))
-    best = newfits %>% map("tss") %>% map_dbl(mean) %>% which.max()
-    sel[step] <- setdiff(vars,sel)[best]
-    message(paste("Selected:",sel[step]))
-    tss_step[[step]] <- newfits[[best]]
-  }
-  varsel <- list(sel = sel, tss_step = tss_step)
-  #saveRDS(varsel,paste0(save_dir,"varsel_2021_05_18.rds"))
-}
-
-#varsel <- readRDS(paste0(save_dir,"varsel_2021_05_18.rds"))
-
-#------------------
-# Plot tss results
-#------------------
-
-tss_data <- varsel$tss_step %>% 
-  imap(~ .x %>% mutate(model = varsel$sel[.y])) %>% 
+tss_data_1 <- varsel_tss_1$metric_step %>% 
+  imap(~ .x %>% mutate(model = varsel_tss_1$sel[.y])) %>% 
   bind_rows() %>% 
-  bind_rows(tss_rf %>% mutate(model = "rf")) %>% 
-  mutate(model = factor(model, levels = c(varsel$sel,"rf")))
+  pivot_wider(names_from = model, values_from = metric) %>% 
+  select(-rep)
 
-tss_data %>% 
-  group_by(model) %>% 
-  summarise(TSS = mean(tss), se = sd(tss)/sqrt(n())) %>% 
-  ggplot(aes(model)) +
-  geom_point(aes(y = TSS)) +
-  geom_linerange(aes(ymin = TSS - se, ymax = TSS + se)) +
-  theme_bw() +
-  labs(title = "with number")
-  
+ll_data_1 <- varsel_log_density_1$metric_step %>% 
+  imap(~ .x %>% mutate(model = varsel_log_density_1$sel[.y])) %>% 
+  bind_rows() %>% 
+  pivot_wider(names_from = model, values_from = metric) %>% 
+  select(-rep)
 
+
+tss_plot_data_1 <- make_plot_data(tss_data_1, varsel_tss_1$sel)
+ll_plot_data_1 <- make_plot_data(ll_data_1, varsel_log_density_1$sel)
+
+plot_model_comparisons(tss_plot_data_1, "se_mod") +
+  labs(title = "Model comparison", subtitle = "Stage 1: Logistic only, threshold = 0.5, score = TSS")
+plot_model_comparisons(ll_plot_data_1, "se_mod") +
+  labs(title = "Model comparison", subtitle = "Stage 1: Logistic only, threshold = 0.5, score = log_density")
+
+
+
+#-------------------------------------------------------------------------------------------------
+# Stage 2: Use nested CV to tune hyper-parameters and compare logistic regression to random forest
+#-------------------------------------------------------------------------------------------------
+
+# for each outer fold, use inner folds to tune threshold, mtry (rf only), and select variables.
+set.seed(7193) # sample(1e4,1)
+cv_data_2 <- nested_cv(scat, outside = vfold_cv(v = 10, repeats = 50), inside = vfold_cv(v = 10))
+
+# specify RF hyper-parameters
+ntree <- 800
+mtry_vec <- 1:(ncol(scat)-1)
+
+# tune models 
+rf_tune_values <- tune_rf(cv_data_2, mtry_vec, ntree)  # 1:43 seconds for 50 repeats with 45 cores
+glm_tune_values <- tune_glm(cv_data_2) # 1:38 seconds for 50 repeats with 45 cores
+
+# add tuned parameters to cv_data
+cv_data_2$thresh_rf <- rf_tune_values$threshold
+cv_data_2$thresh_glm <- glm_tune_values %>% map_dbl("thresh_glm")
+cv_data_2$mtry_rf <- rf_tune_values$mtry
+cv_data_2$form_glm <- glm_tune_values %>% map("form_glm")
+
+# fit models
+fits_rf_best <- fit_rf(cv_data_2, ntree = ntree, type = "best") # 3 seconds with 45 cores
+fits_rf_all<- fit_rf(cv_data_2, ntree = ntree, type = "all") # 2 seconds with 45 cores
+fits_glm <- fit_confusion_glm(cv_data_2)
+
+# plot stage 2 results
+tss_data_2 <- tibble(glm = fits_glm$metric,
+       rf_best = fits_rf_best$metric,
+       rf_all = fits_rf_all$metric)
+
+tss_plot_data_2 <- make_plot_data(tss_data_2, names(tss_data_2))
+
+plot_model_comparisons(tss_plot_data_2, "se_mod") +
+  labs(title = "Model comparison", subtitle = "Stage 2: nested CV with tuned hyper-parameter, score = TSS")
+
+
+## a quick gam
+if(F){
+  vars_num <- scat %>% select(where(is.double)) %>% colnames();vars_num
+  vars_fac <- setdiff(names(scat)[-1],vars_num) 
+  make_form <- function(v_num,v_fac, k = 7) paste("y ~", paste("s(",v_num,", k = ", k , ")", collapse = " + "), " + ", paste(v_fac, collapse = " +")) %>% as.formula()
+  make_form(vars_num, vars_fac)
+  fit <- mgcv::gam(make_form(vars_num, vars_fac), family = binomial(), data = scat);fit
+  fit %>% AIC
+}
 
