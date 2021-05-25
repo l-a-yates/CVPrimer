@@ -1,5 +1,4 @@
 
-
 library(tidyverse); library(tidymodels)
 library(pbmcapply); library(randomForest)
 library(mgcv)
@@ -64,13 +63,15 @@ plot_model_comparisons(ll_plot_data_1, "se_mod") +
 set.seed(7193) # sample(1e4,1)
 cv_data_2 <- nested_cv(scat, outside = vfold_cv(v = 10, repeats = 50), inside = vfold_cv(v = 10))
 
+
+cv_data_2$splits %>% assessment()
 # specify RF hyper-parameters
 ntree <- 800
 mtry_vec <- 1:(ncol(scat)-1)
 
 # tune models 
 rf_tune_values <- tune_rf(cv_data_2, mtry_vec, ntree)  # 1:43 seconds for 50 repeats with 45 cores
-glm_tune_values <- tune_glm(cv_data_2) # 1:38 seconds for 50 repeats with 45 cores
+glm_tune_values <- tune_glm(cv_data_2, vars) # 1:38 seconds for 50 repeats with 45 cores
 
 # add tuned parameters to cv_data
 cv_data_2$thresh_rf <- rf_tune_values$threshold
@@ -94,13 +95,23 @@ plot_model_comparisons(tss_plot_data_2, "se_mod") +
   labs(title = "Model comparison", subtitle = "Stage 2: nested CV with tuned hyper-parameter, score = TSS")
 
 
-## a quick gam
+# Try a gam
 if(F){
-  vars_num <- scat %>% select(where(is.double)) %>% colnames();vars_num
-  vars_fac <- setdiff(names(scat)[-1],vars_num) 
-  make_form <- function(v_num,v_fac, k = 7) paste("y ~", paste("s(",v_num,", k = ", k , ")", collapse = " + "), " + ", paste(v_fac, collapse = " +")) %>% as.formula()
-  make_form(vars_num, vars_fac)
-  fit <- mgcv::gam(make_form(vars_num, vars_fac), family = binomial(), data = scat);fit
-  fit %>% AIC
+v_num <- scat %>% select(where(is.double)) %>% colnames();v_num
+v_fac <- setdiff(names(scat)[-1],vars_num); v_fac
+varsel_tss_gam_1 <- step_gam(v_num, v_fac, cv_data_1, k = 4)
+tss_gam_1 <- varsel_tss_gam_1$metric_step %>% 
+  imap(~ .x %>% mutate(model = varsel_log_density_1$sel[.y])) %>% 
+  bind_rows() %>% 
+  pivot_wider(names_from = model, values_from = metric) %>% 
+  select(-rep)
+
+tss_plot_data_gam_1 <- make_plot_data(tss_gam_1, varsel_tss_gam_1$sel)
+plot_model_comparisons(tss_plot_data_gam_1, "se_mod") +
+  labs(title = "Model comparison - GAM", subtitle = "Stage 1: Logistic only, threshold = 0.5, score = TSS")
+
+#gam_tune_values <- tune_gam(cv_data_2, v_num, v_fac, k = 5)
+ 
 }
+
 
