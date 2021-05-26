@@ -132,6 +132,18 @@ tune_glm <- function(cv_data, vars){
   }, mc.cores = MAX_CORES)
 }
 
+tune_glm_dredge <- function(cv_data, models){
+  pbmclapply(cv_data$inner_resamples, function(sample){
+    sapply(models, function(form){
+      sample$splits %>% 
+        map(~ glm(form, data = analysis(.x), family = binomial()) %>% 
+              {tibble(probs = predict(.,newdata = assessment(.x), type = "response"), 
+                      y = as.numeric(assessment(.x)$y != levels(assessment(.x)$y)[1]))}
+        ) %>% bind_rows %>% tss_thresh()
+    }) %>% t %>% as_tibble %>% mutate(model = 1:n()) %>% arrange(-tss) %>% slice(1)
+  }, mc.cores = MAX_CORES)
+}
+
 
 fit_rf <- function(cv_data, ntree = 500, type = c("best","all")){
   make_formula = function(vars) paste("y ~ 1 + ",paste(vars,collapse=" + ")) %>% as.formula()
