@@ -1,4 +1,6 @@
-
+# prepare data
+# select and transform initial variables
+# remove NAs
 prep_data <- function(data){
   data %>% as_tibble %>% 
     select(y = Species, Number, Length, Diameter, Taper, TI, Mass, CN, Location, ropey, segmented) %>% 
@@ -14,7 +16,14 @@ prep_data <- function(data){
     mutate(across(c(ropey,segmented), factor))
 }
 
+##-------------------
+## Stage 1 functions
+##-------------------
 
+# perform variable step selection using MLE and a supplied metric
+# @ vars: a vector variable names
+# @ cv_data: a vfold_cv object from the rsample package
+# @ metric: the score used compare and select variables at each step
 step_glm <- function(vars, cv_data, metric = "tss"){
   if(metric == "log_density") fit_fun <- fit_ll_glm
   if(metric == "tss") fit_fun <- fit_confusion_glm
@@ -36,8 +45,12 @@ step_glm <- function(vars, cv_data, metric = "tss"){
   list(sel = sel, metric_step = metric_step)
 }
 
-
-fit_confusion_glm <- function(cv_data, formula = NULL){
+# Computes the L estimates of the selected confusion-matrix metric
+# @cv_data: a repeated vfold_cv object from the rsample package with L repeats
+# @formula: if supplied, the same formula is applied across all CV samples, otherwise the formulas 
+#    must be defined row-by-row in a column called `form_glm` in the vfold_cv object
+# @metric: the name of a function which computes a metric from a 2x2 confusion-matrix 
+fit_confusion_glm <- function(cv_data, formula = NULL, metric = tss){
   get_confusion_matrix <- function(form, split, thresh){
     glm(form, data = analysis(split), family = binomial()) %>% 
       {tibble(pred = predict(.,newdata = assessment(split), type = "response") >= thresh, 
@@ -46,15 +59,17 @@ fit_confusion_glm <- function(cv_data, formula = NULL){
       table %>% {c(tp = .[1,1], fp = .[1,2], fn = .[2,1], tn = .[2,2])}
   }
   if(!is.null(formula)) form <- list(formula) else form <- cv_data$form_glm
-  with(cv_data, mapply(get_confusion_matrix, form, splits, thresh_glm, SIMPLIFY = T)) %>% t %>% 
+  with(cv_data, mapply(get_confusion_matrix, form, splits, thresh, SIMPLIFY = T)) %>% t %>% 
     as_tibble %>% 
     bind_cols(rep = cv_data$id, .) %>% 
     group_by(rep) %>% 
-    summarise(metric = matrix(c(sum(tp),sum(fn),sum(fp),sum(tn)),2,2) %>% tss) %>% 
+    summarise(metric = matrix(c(sum(tp),sum(fn),sum(fp),sum(tn)),2,2) %>% metric) %>% 
     mutate(rep = 1:n())
 }
 
-
+# Computes the L estimates of the log probability of the logistic model
+# @cv_data: a repeated vfold_cv object from the rsample package with L repeats
+# @formula: formula to be applied across all CV samples
 fit_ll_glm <- function(cv_data, formula){
   calc_pred_ll <- function(form, split){
     fit <- glm(form, data = analysis(split), family = binomial())
@@ -69,7 +84,7 @@ fit_ll_glm <- function(cv_data, formula){
     mutate(rep = 1:n())
 }
 
-
+# computes TSS from a confusion matrix `cm`
 tss <- function (cm) {
   sens <- cm[1,1]/(cm[2,1] + cm[1,1])
   spec <- cm[2,2]/(cm[1,2] + cm[2,2])
@@ -77,6 +92,11 @@ tss <- function (cm) {
 }
 
 
+
+##-------------------
+## STAGE 2 functions
+##-------------------
+# determine probability threshold value that maximises the TSS statistic
 tss_thresh <- function(tbl){
   probs<- tbl$probs
   y <- tbl$y
@@ -90,8 +110,10 @@ tss_thresh <- function(tbl){
   tibble(threshold,tss) %>% arrange(-tss) %>% slice(1) %>% as_vector
 }
 
-
-# cv_data: nested cv object from rsamples
+# Tunes tree depth and probability threshold for a random forest model
+# @cv_data: nested cv object from rsamples
+# @mtry_vec: vector of candidate mtry values
+# @ntree: number of trees (fixed)
 tune_rf <- function(cv_data, mtry_vec, ntree){
   pbmclapply(cv_data$inner_resamples, function(sample){
     lapply(mtry_vec, function(m){
@@ -105,7 +127,8 @@ tune_rf <- function(cv_data, mtry_vec, ntree){
 }
 
 
-tune_glm <- function(cv_data, vars){
+# tune probability threshold and step-select variables for each (outer) training set
+tune_glm_step <- function(cv_data, vars){
   make_formula <- function(vars) paste("y ~ 1 + ",paste(vars,collapse=" + "))
     pbmclapply(cv_data_2$inner_resamples, function(sample){
     sel <- thresh <- c()
@@ -127,12 +150,13 @@ tune_glm <- function(cv_data, vars){
       metric_step[[step]] = newfits[[best]]
     }
     best_model = metric_step %>% map_dbl("tss") %>% which.max
-    list(form_glm = make_formula(sel[1:best_model]), 
-         thresh_glm = thresh[best_model])
-  }, mc.cores = MAX_CORES)
+    list(form = make_formula(sel[1:best_model]), 
+         threshold = thresh[best_model])
+  }, mc.cores = MAX_CORES) %>% bind_rows
 }
 
-tune_glm_dredge <- function(cv_data, models){
+# tune probability threshold and select variables for each (outer) training set
+tune_glm_all <- function(cv_data, models){
   pbmclapply(cv_data$inner_resamples, function(sample){
     sapply(models, function(form){
       sample$splits %>% 
@@ -140,12 +164,14 @@ tune_glm_dredge <- function(cv_data, models){
               {tibble(probs = predict(.,newdata = assessment(.x), type = "response"), 
                       y = as.numeric(assessment(.x)$y != levels(assessment(.x)$y)[1]))}
         ) %>% bind_rows %>% tss_thresh()
-    }) %>% t %>% as_tibble %>% mutate(model = 1:n()) %>% arrange(-tss) %>% slice(1)
-  }, mc.cores = MAX_CORES)
+    }) %>% t %>% as_tibble %>% mutate(form = unname(models), model = names(models)) %>% arrange(-tss) %>% slice(1)
+  }, mc.cores = MAX_CORES) %>% bind_rows()
 }
 
 
-fit_rf <- function(cv_data, ntree = 500, type = c("best","all")){
+
+# Fit the random forest model and return TSS estimates using tuned hyperparameters for each sample
+fit_rf <- function(cv_data, ntree = 500, type = c("all","best")){
   make_formula = function(vars) paste("y ~ 1 + ",paste(vars,collapse=" + ")) %>% as.formula()
   type = type[1]
   get_confusion_matrix <- function(split, thresh, mtry, ntree){
@@ -164,11 +190,13 @@ fit_rf <- function(cv_data, ntree = 500, type = c("best","all")){
   with(cv_data, pbmcmapply(get_confusion_matrix, splits, thresh_rf, mtry_rf, list(ntree), mc.cores = MAX_CORES)) %>% 
     simplify %>% t %>% 
     as_tibble %>% 
-    mutate(rep = 1:n()) %>% 
+    mutate(rep = cv_data$id) %>% 
     group_by(rep) %>% 
-    summarise(metric = matrix(c(sum(tp),sum(fn),sum(fp),sum(tn)),2,2) %>% tss)
+    summarise(metric = matrix(c(sum(tp),sum(fn),sum(fp),sum(tn)),2,2) %>% tss) %>% 
+    mutate(rep = 1:n())
 }
 
+# computes summary statistics for model score estimates
 make_plot_data <- function(metric_data, levels){
   best_model <- metric_data %>% map_dbl(mean) %>% which.max() %>% names()
   tibble(model = factor(names(metric_data), levels = levels), 
@@ -178,7 +206,7 @@ make_plot_data <- function(metric_data, levels){
          se_mod = sqrt(1 -cor(metric_data)[best_model,])*se[best_model])
 }
 
-
+# plots estimates of the model scores and the selected uncertainty measure
 plot_model_comparisons <- function(plot_data, se_type = c("se_mod", "se_diff", "se")){
   plot_data <- plot_data %>% mutate(se = plot_data[[se_type[1]]])
   plot_data %>% 
