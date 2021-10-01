@@ -20,14 +20,14 @@ prep_data <- function(data){
 ## Stage 1 functions
 ##-------------------
 
+
 # perform variable step selection using MLE and a supplied metric
 # @ vars: a vector variable names
 # @ cv_data: a vfold_cv object from the rsample package
 # @ metric: the score used compare and select variables at each step
-step_glm <- function(vars, cv_data, metric = "tss"){
-  if(metric == "log_density") fit_fun <- fit_ll_glm
-  if(metric == "tss") fit_fun <- fit_confusion_glm
-  
+step_glm <- function(vars, cv_data, metric){
+  fit_fun <- fit_confusion_glm
+  if(metric == "log_density") fit_fun <- fit_ll_glm else metric <- get(metric)
   sel <- c()
   metric_step <- list()
   make_formula <- function(vars) paste("y ~ 1 + ",paste(vars,collapse=" + "))
@@ -35,7 +35,7 @@ step_glm <- function(vars, cv_data, metric = "tss"){
   for(step in 1:length(vars)){
     message(paste("Step:",step))
     newfits = pbmclapply(setdiff(vars,sel), function(var){
-      fit_fun(cv_data, make_formula(c(sel,var)))
+      fit_fun(cv_data, make_formula(c(sel,var)), metric)
     }, mc.cores = length(setdiff(vars,sel)))
     best = newfits %>% map("metric") %>% map_dbl(mean) %>% which.max()
     sel[step] <- setdiff(vars,sel)[best]
@@ -45,12 +45,13 @@ step_glm <- function(vars, cv_data, metric = "tss"){
   list(sel = sel, metric_step = metric_step)
 }
 
+
 # Computes the L estimates of the selected confusion-matrix metric
 # @cv_data: a repeated vfold_cv object from the rsample package with L repeats
 # @formula: if supplied, the same formula is applied across all CV samples, otherwise the formulas 
 #    must be defined row-by-row in a column called `form_glm` in the vfold_cv object
 # @metric: the name of a function which computes a metric from a 2x2 confusion-matrix 
-fit_confusion_glm <- function(cv_data, formula = NULL, metric = tss){
+fit_confusion_glm <- function(cv_data, formula = NULL, metric){
   get_confusion_matrix <- function(form, split, thresh){
     glm(form, data = analysis(split), family = binomial()) %>% 
       {tibble(pred = predict(.,newdata = assessment(split), type = "response") >= thresh, 
@@ -70,7 +71,7 @@ fit_confusion_glm <- function(cv_data, formula = NULL, metric = tss){
 # Computes the L estimates of the log probability of the logistic model
 # @cv_data: a repeated vfold_cv object from the rsample package with L repeats
 # @formula: formula to be applied across all CV samples
-fit_ll_glm <- function(cv_data, formula){
+fit_ll_glm <- function(cv_data, formula, metric = NULL){
   calc_pred_ll <- function(form, split){
     fit <- glm(form, data = analysis(split), family = binomial())
     tibble(y_pred = predict(fit, newdata = assessment(split),type = "response"),
@@ -91,6 +92,11 @@ tss <- function (cm) {
   sens + spec - 1
 }
 
+# computes MCC from a confusion matrix `cm`
+mcc <- function(cm){
+  (cm[1,1]*cm[2,2] - cm[1,2]*cm[2,1])/
+    (sqrt((cm[1,1]+cm[1,2])*(cm[1,1]+cm[2,1])*(cm[2,2]+cm[1,2])*(cm[2,2]+cm[2,1])))
+}
 
 
 ##-------------------
@@ -201,8 +207,8 @@ make_plot_data <- function(metric_data, levels){
   best_model <- metric_data %>% map_dbl(mean) %>% which.max() %>% names()
   tibble(model = factor(names(metric_data), levels = levels), 
          metric = metric_data %>% map_dbl(mean),
-         se = metric_data %>% map_dbl(~ sd(.x)/sqrt(length(.x))),
-         se_diff = metric_data %>% map(~ .x - metric_data[[best_model]]) %>% map_dbl(~ sd(.x)/sqrt(length(.x))),
+         se = metric_data %>% map_dbl(sd),
+         se_diff = metric_data %>% map(~ .x - metric_data[[best_model]]) %>% map_dbl(sd),
          se_mod = sqrt(1 -cor(metric_data)[best_model,])*se[best_model])
 }
 

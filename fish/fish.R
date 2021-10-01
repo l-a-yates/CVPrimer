@@ -15,7 +15,7 @@ library(fishmethods)
 library(FlexParamCurve)
 library(RColorBrewer)
 
-source("fish_functions_flex.R")
+#source("fish_functions_flex.R")
 source("fish_functions_nlme.R")
 
 MAX_CORES <- 30
