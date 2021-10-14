@@ -177,32 +177,27 @@ m.logo.pointwise %>% mutate(across(everything(), ~ .x - m.logo.pointwise[[m.logo
 make_form_fe <- function(fun, K, t, L) {
   if(K) {f.K <- K ~ sex} else {f.K <- K ~ 1}
   if(t) {f.t <- t0 ~ sex} else {f.t <- t0 ~ 1}
-  if(L) {f.L <- Linf ~ sex + haul} else {f.L <- Linf ~ 1 + haul}
+  if(L) {f.L <- Linf ~ sex + haul} else {f.L <- Linf ~ 0 + haul}
   bf(get(paste0("nlf.",fun)), f.K, f.t, f.L, nl = T)
 }
 
 make_prior_fe <- function(K, t, L, sig_Linf = 10, sig_sex2 = 0.3){
-  p <-  
     prior(normal(0, 1), nlpar = "K") +  
     prior(normal(0, 1), nlpar = "t0") +
-    set_prior(paste0("normal(0, ",sig_Linf,")"), nlpar = "Linf")
-  if(K) p <-  p + set_prior(paste0("normal(0, ",sig_sex2,")"), nlpar = "K", coef = "sex2") 
-  if(t) p <-  p + set_prior(paste0("normal(0, ",sig_sex2,")"), nlpar = "t0", coef = "sex2") 
-  if(L) p <-  p + set_prior(paste0("normal(0, ",sig_sex2,")"), nlpar = "Linf", coef = "sex2") 
-  return(p)
+    set_prior(paste0("student_t(3, 0, ", sig_Linf,")"), nlpar = "Linf")
 }
 
-
 m.vB.0.fe <- brm(formula = make_form_fe("vB",0,0,0),
-                 prior = make_prior_fe(0,0,0),
+                 prior = make_prior_fe(0,0,0,sig_Linf = 200),
                  data = fishData,
                  cores =4,
                  chains = 4,
                  seed = seed,
                  iter = 4000, 
-                 file = paste0(sv_dir,"/m.vB.0.fe"),
-                 file_refit = "always")
+                 file = paste0(sv_dir,"/m.vB.0.fe.wide"))
 
+m.vB.0.fe
+m.vB.0.fe %>% prior_summary()
 
 make_form_pop <- function(fun, K, t, L) {
   if(K) {f.K <- K ~ sex} else {f.K <- K ~ 1}
@@ -224,41 +219,65 @@ m.vB.0.pop <- brm(formula = make_form_pop("vB",0,0,0),
 
 m.vB.0 <- readRDS(paste0(sv_dir,"/vB.0.rds"))
 
+m.vB.0.pop <- readRDS(paste0(sv_dir,"/m.vB.0.pop.rds"))
+m.vB.0.fe <- readRDS(paste0(sv_dir,"/m.vB.0.fe.wide.rds"))
+
 m.list <- list(FE = m.vB.0.fe, POP = m.vB.0.pop, RE = m.vB.0)
-#m.list.loo <- m.list %>% map(loo, cores = 10)
+m.list.loo <- m.list %>% map(loo, cores = 10)
 #saveRDS(m.list.loo, paste0(sv_dir,"/m.list.loo"))
 m.list.loo <- readRDS(paste0(sv_dir,"/m.list.loo"))
-m.list.loo %>% loo_compare()
+m.list.loo %>% loo_compare() %>% as_tibble()
+
 
 # Extract fixed (FE) and random (RE) effects for Linf
-L_haul_FE <- m.vB.0.fe %>% as_tibble %>% select(starts_with("b_Linf_h")) %>% 
-  rename_with(~ str_replace(.x, fixed("b_Linf_haul"),""),everything()) %>% 
-  mutate(across(everything(), ~ .x + (m.vB.0.fe %>% as_tibble %>% pull("b_Linf_Intercept")))) %>% 
+L_haul_FE <- m.vB.0.fe %>% as_tibble %>% select(starts_with("b_Linf_")) %>% 
+  rename_with(~ str_replace(.x, "b_Linf_haul","")) %>% 
   map_dbl(mean) %>% 
   {tibble(haul = names(.), FE = unname(.))}
 
+L_haul_FE <- m.vB.0.fe %>% as_tibble %>% select(starts_with("b_Linf_")) %>% 
+  rename_with(~ str_replace(.x, "b_Linf_haul","")) %>% 
+  #mutate(across(everything(), ~ .x + (m.vB.0.fe %>% as_tibble %>% pull("b_Linf_Intercept")))) %>% 
+  mutate(across(-b_Linf_Intercept, ~ .x + b_Linf_Intercept)) %>%   
+  rename(BFC970009 = b_Linf_Intercept) %>% 
+  map_dbl(mean) %>% 
+  {tibble(haul = names(.), FE = unname(.))}
+
+
 L_haul_RE <- m.vB.0 %>% as_tibble %>% select(starts_with("r_haul")) %>% 
-  rename_with(~ str_replace(.x, fixed("r_haul__Linf["),""),everything()) %>% 
-  rename_with(~ str_replace(.x, fixed(",Intercept]"),""),everything()) %>% 
+  rename_with(~ str_replace(.x, "r_haul__Linf\\[","")) %>% 
+  rename_with(~ str_replace(.x, ",Intercept\\]","")) %>% 
   mutate(across(everything(), ~ .x + (m.vB.0 %>% as_tibble %>% pull("b_Linf_Intercept")))) %>% 
   map_dbl(mean) %>% 
   {tibble(haul = names(.), RE = unname(.))}
 
+lm <- m.vB.0 %>% as_tibble %>% pull(b_Linf_Intercept) %>% mean
+m.vB.0
+
+dark2 <- RColorBrewer::brewer.pal(8,"Dark2")
+pie(rep(1, length(dark2)), col = dark2 , main="") 
+
+
 # combine data and make shrinkage plot
 full_join(L_haul_FE,L_haul_RE, by = "haul") %>% 
   arrange(RE) %>% 
-  mutate(haul = factor(haul, levels = haul)) %>% 
+  mutate(haul = factor(haul, levels = haul),
+         FE = FE - lm) %>% 
+  mutate(across(-haul, ~ .x + 152)) %>% 
   ggplot(aes(x = haul)) +
-  geom_hline(aes(yintercept = y), data = ~ .x %>% summarise(y = mean(RE + 152)), lty = "dashed") +
-  geom_point(aes(y = RE + 152), size = 0.5, col = "black") +
-  geom_linerange(aes(ymin = RE + 152, ymax = FE + 152), col = "black")+
-  geom_point(aes(y = FE + 152), size = 1, col = "black")+
+  #geom_hline(aes(yintercept = 0), lty = "dashed") +
+  geom_linerange(aes(ymin = RE, ymax = FE), col = "grey60")+
+  geom_point(aes(y = FE, col = "Fixed"), size = 0.5)+
+  geom_point(aes(y = RE, col = "Random"), size = 0.5) +
   theme_classic() +
+  scale_color_manual(values = c(Fixed = "black", Random = dark2[2])) +
   theme(axis.text.x = element_blank(),
-        axis.ticks.x = element_blank()) +
-  labs(y = expression(L[0]), subtitle = expression("Shrinkage of haul-level"~L[0]~"estimates"))
+        axis.ticks.x = element_blank(),
+        legend.position = "bottom") +
+  labs(y = expression(L[0*", haul"]), subtitle = expression("Shrinkage of haul-level"~L[0]~"estimates"),
+       col = "", x = "haul")
 
-#ggsave(paste0("plots/re_shrinkage_plot_",run_date,".pdf"), width = 90, height = 70, unit = "mm")
+ggsave(paste0("plots/re_shrinkage_plot_2_",run_date,".pdf"), width = 90, height = 80, unit = "mm")
 
 
 # manually compute p_loo to check summary: YES
@@ -275,5 +294,7 @@ m.list.loo$FE$pointwise[,"p_loo"] %>% sum
 # actual parameter count for FE
 m.vB.0.fe %>% as_tibble %>% names %>% length -1
 
+(m.list.loo$RE$pointwise[,"p_loo"] - m.list.loo$FE$pointwise[,"p_loo"]) %>% 
+  {c(p_loo_diff = sum(.), se_p_loo_diff = sd(.)*sqrt(length(.)))}
 
 

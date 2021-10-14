@@ -7,7 +7,7 @@ library(glmnet)
 rm(list=ls())
 options(na.action = "na.fail") # for MuMIn::dredge
 
-MAX_CORES <- 30
+MAX_CORES <- 10
 
 #----------
 # Data prep
@@ -189,7 +189,7 @@ get_cm <- function(split,rep,fold, alpha){
     mutate(rep = rep, fold = fold, lambda = lambda)
 }
 
-alpha = 1 # set alpha to change between reg types
+alpha = 1 # set alpha to change between reg types (1 - lasso, 0 - ridge)
 log_lambda <- seq(1.5,-4, length.out = 100)
 if(alpha == 1) log_lambda <- seq(-1.4,-4, length.out = 100) # lasso
 if(alpha <= 0.05) log_lambda <- seq(1.5,-1, length.out = 100)  # ridge
@@ -266,9 +266,10 @@ plot_tuned <- metric_plot_data %>%
   geom_point(aes(y = metric), size = 1, data = metric_mod_ose) +
   #geom_point(aes(y = metric), shape = 1, size = 6, data = ~ .x %>% filter(lambda == lambda_best), col = "black") +
   geom_point(aes(y = metric), size = 1, data = ~ .x %>% filter(lambda == lambda_best), col = "black") +
-  labs(subtitle = NULL, x = NULL, y ="MCC") +
+  labs(subtitle = NULL, x = NULL, y = "MCC") +
   theme_classic() +
-  theme(panel.grid = element_blank(), axis.text.x = element_blank()) 
+  theme(panel.grid = element_blank(), 
+        axis.text.x = element_blank()) 
 
 fit_glmnet <- glmnet(x = scat %>% select(-y) %>% as.data.frame() %>% makeX(),
        y = scat$y,
@@ -291,20 +292,22 @@ plot_est <- fit_glmnet$beta %>% as.matrix %>% t %>% as_tibble() %>%
   labs(y = "Parameter estimates", x = expression(paste("log(",lambda,")"))) +
   theme_classic()
 
-if(alpha == 0) plot_tuned <-  plot_tuned + labs(y = NULL, subtitle = "Ridge")
-if(alpha == 0) plot_est <-  plot_est + labs(y = NULL)
-if(alpha == 1) plot_tuned <-  plot_tuned + labs(subtitle = "Lasso")
+if(alpha == 0) plot_tuned_ridge <-  plot_tuned + labs(y = NULL, subtitle = "")
+if(alpha == 0) plot_est_ridge <-  plot_est + labs(y = NULL)+ theme(legend.position = "none")
+if(alpha == 1) plot_tuned_lasso <-  plot_tuned + labs(subtitle = "") + 
+  labs(y = expression("MCC"~phantom(hat(theta))))
+ # theme(plot.margin = element_text(margin = ggplot2::margin(l = 3.5)))
+if(alpha == 1) plot_est_lasso <-  plot_est + theme(legend.position = "none") + labs(y  = expression(widehat(theta)))
 
-plot_reg_main <- ggpubr::ggarrange(plot_tuned, plot_est, ncol =1, common.legend = T, 
-                  align = "v", legend = "none")
+if(alpha == 1) plot_lasso <- ggpubr::ggarrange(plot_tuned_lasso, plot_est_lasso, ncol = 1, labels = c("A","C")) %>% 
+                ggpubr::annotate_figure(top = "Lasso")
 
-if(alpha == 1) plot_lasso_reg <- plot_reg_main
-if(alpha == 0) plot_ridge_reg <- plot_reg_main
-#ggsave("plots/scat_lasso_tune_2021_10_01.png", width = 90, height = 120, 
-#       units = "mm", device = cairo_pdf()); dev.off()
+if(alpha == 0) plot_ridge <- ggpubr::ggarrange(plot_tuned_ridge, plot_est_ridge, ncol = 1, labels = c("B","D")) %>% 
+                ggpubr::annotate_figure(top = "Ridge")
 
-ggpubr::ggarrange(plot_lasso_reg, plot_ridge_reg, nrow = 1, labels = "AUTO")
-#ggsave("plots/scat_reg_tune_2021_10_01.pdf", width = 180, height = 120, 
+
+ggpubr::ggarrange(plot_lasso, plot_ridge, nrow = 1)
+#ggsave("plots/scat_reg_tune_2021_10_14.pdf", width = 180, height = 120, 
 #      units = "mm", device = cairo_pdf()); dev.off()
 
 

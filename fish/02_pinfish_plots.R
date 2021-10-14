@@ -81,7 +81,7 @@ loo_plot
 
 
 # LOGO plots
-logo_pointwise <- m.logo.cv %>% map("pointwise") %>% map_dfc(~ .[,"elpd_kfold"]) %>% 
+logo_pointwise <- m.logo %>% map("pointwise") %>% map_dfc(~ .[,"elpd_kfold"]) %>% 
   relocate(all_of(models_grid$name))
 
 se_type <- "se_diff"
@@ -119,7 +119,7 @@ logo_plot
 tt <- theme(axis.text.x = element_text(size = 5))
 
 ggpubr::ggarrange(loo_plot + tt,logo_plot + tt, labels = "AUTO", nrow = 1)
-ggsave(paste0("plots/pinfish_ose_",se_type,"_",run_date,".pdf"), width = 180, height = 80, units = "mm", device = cairo_pdf()); dev.off()  
+#ggsave(paste0("plots/pinfish_ose_",se_type,"_",run_date,".pdf"), width = 180, height = 80, units = "mm", device = cairo_pdf()); dev.off()  
 
 
 ##-----------
@@ -134,10 +134,11 @@ ce_data <- hauls %>% map_dfr(~ tibble(age = seq(0.5,6.3,0.04), haul = .x))
 g.vB <- function(age, Linf, K, t0) (152 + Linf) * (1 - exp(-1*((1.3 + K) * (age - t0))))
 
 #pp_m.vB.0 <- m.vB.0 %>% posterior_predict(ndraws = 500)
+m.vB.0 %>% as_tibble %>% rename_with(str_replace_all, starts_with("r_haul"), pattern  = "r_haul__Linf\\[", replacement = "" )
 
-ps.0 <- m.vB.0 %>% as_tibble %>% 
-  rename_with(~ str_replace(.x, fixed("r_haul__Linf["),""), starts_with("r_haul")) %>% 
-  rename_with(~ str_replace(.x, fixed(",Intercept]"),""), ends_with("Intercept]")) %>% 
+ps.0 <- m.vB.0 %>% as_tibble %>%
+  rename_with(~ str_replace(.x, "r_haul__Linf\\[","")) %>% 
+  rename_with(~ str_replace(.x, ",Intercept\\]",""), ends_with("Intercept]")) %>% 
   rename(K = b_K_Intercept, t0 = b_t0_Intercept, Linf0 = b_Linf_Intercept, tau = sd_haul__Linf_Intercept) %>% 
   select(-lp__) %>% sample_n(500) %>% mutate(s = 1:500)
 
@@ -151,8 +152,6 @@ ce_plot_data <- ps.0 %>% pivot_longer(-any_of(c("sigma","tau","s","K","Linf0","t
 ribbon_data <- ce_plot_data %>% 
   group_by(age) %>% 
   summarise(l_low = quantile(length, 0.025), l_hi = quantile(length, 0.975)) 
-#  group_by(age) %>% 
-#  summarise(l_low = min(l_low), l_hi = max(l_hi))
 
 ce_plot_data_col <- ce_plot_data %>% 
   group_by(haul) %>% 
@@ -187,7 +186,7 @@ ce_data_2 <-tibble(age = seq(0.5,6.3,0.04), J = 1)
 
 #m.log.t$formula
 g.log.0 <- function(age, Linf, K, t0) (152 + Linf)/(1 + exp(-(1.3 + K) * (age - t0)))
-
+m.log.0$formula
 ps.0 <- m.log.0 %>% as_tibble %>% 
   select(K = b_K_Intercept, t0 = b_t0_Intercept, Linf0 = b_Linf_Intercept, 
          tau = sd_haul__Linf_Intercept, sigma) %>% 
@@ -198,30 +197,30 @@ ce_plot_data2 <- full_join(ps.0 %>% mutate(J = 1), ce_data_2, by = "J") %>%
   group_by(s) %>% 
   mutate(sig_err = rnorm(1,0,mean(sigma))) %>%  ## draw from residual error model
   mutate(tau_err = rnorm(1,0,mean(tau))) %>% ## draw from hierarchical model for Linf
-  mutate(length_marg = g.log.0(age,Linf0 + tau_err,K,t0) + sig_err)
+  mutate(length = g.log.0(age,Linf0 + tau_err,K,t0) + sig_err,
+         length_mean = g.log.0(age,Linf0,K,t0))
 
-ce_plot_data2 <- c(1,2) %>% map_dfr(~ ps.t %>% mutate(sex = .x)) %>% 
-  full_join(ps.0, ce_data_2, by = "sex") %>% 
-  group_by(s) %>% 
-  mutate(sig_err = rnorm(1,0,mean(sigma))) %>%  ## draw from residual error model
-  mutate(tau_err = rnorm(1,0,mean(tau))) %>% ## draw from hierarchical model for Linf
-  mutate(t0_sex2 = t0_sex2*(sex - 1)) %>% 
-  mutate(length_marg = g.log.t(age,Linf0 + tau_err,K,t0,t0_sex2) + sig_err )
+# ce_plot_data2 <- c(1,2) %>% map_dfr(~ ps.t %>% mutate(sex = .x)) %>% 
+#   full_join(ps.0, ce_data_2, by = "sex") %>% 
+#   group_by(s) %>% 
+#   mutate(sig_err = rnorm(1,0,mean(sigma))) %>%  ## draw from residual error model
+#   mutate(tau_err = rnorm(1,0,mean(tau))) %>% ## draw from hierarchical model for Linf
+#   mutate(t0_sex2 = t0_sex2*(sex - 1)) %>% 
+#   mutate(length_marg = g.log.t(age,Linf0 + tau_err,K,t0,t0_sex2) + sig_err )
 
 # select colours
 dark2 <- RColorBrewer::brewer.pal(8,"Dark2")
-pie(rep(1, length(dark2)), col = dark2 , main="") 
+#pie(rep(1, length(dark2)), col = dark2 , main="") 
 
 ce_plot_marg <- ce_plot_data2 %>% 
-  mutate(length = length_marg) %>% 
   group_by(age) %>% 
   summarise(l_low = quantile(length, 0.025),
             l_hi = quantile(length, 0.975),
-            length = mean(length)) %>% 
+            length = mean(length_mean)) %>% 
   ggplot(aes(x = age)) +
   geom_ribbon(aes(ymin = l_low, ymax = l_hi), fill = blues9[3], alpha = 0.4) +
   geom_line(aes(y = length), size = 0.7, col = blues9[9], lty = "solid") +
-  geom_point(aes(y = sl), size = 0.4, alpha = 1, data = m.log.t$data) +
+  geom_point(aes(y = sl), size = 0.4, alpha = 1, data = m.log.0$data) +
   #geom_point(aes(y = sl), size = 0.3, alpha = 1, col = "white", data = m.vB.0$data) +
   theme_classic() +
   theme(legend.position = "none", legend.key.height =  unit(10,"mm"))
@@ -233,7 +232,7 @@ yl2 <- ylim(c(45,206))
 ggpubr::ggarrange(ce_plot_cond + labs(subtitle = "Pinfish data: conditional focus") + yl2, 
                   ce_plot_marg + yl2 + labs(y = "", subtitle = "Pinfish data: marginal focus"), nrow = 1, labels = "AUTO")
 
-ggsave(paste0("plots/pinfish_data_2_",run_date,".pdf"), width = 180, height = 90, units = "mm", device = cairo_pdf()); dev.off()  
+#ggsave(paste0("plots/pinfish_data_2_",run_date,".pdf"), width = 180, height = 90, units = "mm", device = cairo_pdf()); dev.off()  
 
 
 ggpubr::ggarrange(loo_plot + labs(subtitle = "PSIS-LOO-CV estimates") + tt,
