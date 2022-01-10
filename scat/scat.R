@@ -16,7 +16,8 @@ MAX_CORES <- 10
 source("scat_funs.R")
 data(scat,package = "caret") # Morphometrics on scat data for bobcat, coyote and gray fox
 scat <- prep_data(scat) # N.B. fail = canid (factor-level 1), success = felid (factor-level 2)
-run_date <- "2021_09_30"
+run_date <- "2021_09_30" # analysis for 1st draft
+#run_date <- "2021_12_23" # BPI
 save_dir <- paste0("fits_",run_date,"/")
 if(!dir.exists(save_dir)) dir.create(save_dir)
 
@@ -46,6 +47,7 @@ if(run){
   varsel_log_density_1 <- readRDS(paste0(save_dir,"varsel_log_density_1_",run_date,".rds"))
 }
 
+metric <- "log_density"
 metric <- "mcc"
 varsel_metric_1 <- get(paste0("varsel_",metric,"_1"))
 metric_data_1 <- varsel_metric_1$metric_step %>% 
@@ -316,6 +318,7 @@ ggpubr::ggarrange(plot_lasso, plot_ridge, nrow = 1)
 # Stage 2: Use nested CV to tune hyper-parameters and compare logistic regression to random forest
 #-------------------------------------------------------------------------------------------------
 
+MAX_CORES <- 40
 
 # for each outer fold, use inner folds to tune threshold, mtry (rf only), and select variables.
 set.seed(7193) # sample(1e4,1)
@@ -392,5 +395,143 @@ plot_model_comparisons(tss_plot_data_2_all, "se_mod") +
 
 tss_plot_data_2_all
 
+#--------------
+## Stage 3: BPI
+#--------------
+library(projpred)
+library(brms)
+library(ggpubr)
+library(bayesplot)
 
+run_date <- "2021_12_23" # BPI
+save_dir <- paste0("fits_",run_date,"/")
+if(!dir.exists(save_dir)) dir.create(save_dir)
+
+n <- nrow(scat); n # 91
+D <- length(vars); D # 10
+p0 <- 3 # prior guess for the number of relevant variables
+tau0 <- p0/(D-p0) * 1/sqrt(n) # scale for tau (notice that stan_glm will automatically scale this by sigma)
+
+# fit a reference model
+if(F){
+  fit.hs <- brm(y ~ ., family=bernoulli(), data=scat,
+                  prior=prior(horseshoe(scale_global = tau0, scale_slab = 1), class=b),
+                  chains=4, iter=2000, cores = 4)
+  
+  fit.lasso <- brm(y ~ ., family=bernoulli(), data=scat,
+                prior= set_prior("lasso(1)"),
+                chains=4, iter=2000, cores = 4)
+  
+  fit.weak <- brm(y ~ ., family=bernoulli(), data=scat, chains=4, iter=2000, cores = 4)
+  
+  saveRDS(fit.hs, paste0(save_dir,"fit.hs.rds"))
+  saveRDS(fit.lasso, paste0(save_dir,"fit.lasso.rds"))
+  saveRDS(fit.weak, paste0(save_dir,"fit.weak.rds"))
+}
+
+
+# loo check
+fits <- list(hs = fit.hs, lasso = fit.lasso, weak = fit.weak)
+fits %>% map(loo, cores = 10) %>% loo_compare() # hs (best) -> lasso -> weak (worst)
+
+
+
+# plot posteriors of hs model
+plot_post <- function(fit){
+  fit %>% as_tibble %>% select(-starts_with("l")) %>% mcmc_areas(area_method = "scaled", prob_outer = 0.98) +
+    xlim(c(-2.8,2)) +
+    theme_classic()
+}
+
+ggarrange(
+  fit.weak %>% plot_post + labs(subtitle = "Weakly informative"),
+  fit.lasso %>% plot_post + labs(subtitle = "Lasso"),
+  fit.hs %>% plot_post + labs(subtitle = "Horseshoe"),
+  ncol = 1,
+  labels = "AUTO"
+) %>% 
+  ggsave("plots/scat_reg_post.pdf", plot = ., width = 150, height = 200, units = "mm")
+
+
+# varsel and projection
+if(F){
+  vs <- cv_varsel(fit.hs, cv_method = "LOO", method = "forward")
+  saveRDS(vs,paste0(save_dir,"vs.rds"))
+} else vs <- readRDS(paste0(save_dir,"vs.rds"))
+
+# plot varsel
+vs_plot <- 
+  vs %>% plot(stats = c("elpd"), deltas = T) + 
+  theme_classic() +
+  theme(strip.text = element_blank(),
+        strip.background = element_blank(),
+        legend.position = "none") +
+  labs(y = expression(Delta*"ELPD"))
+
+solution_terms(vs)
+
+# project onto 1 parameter submodel
+proj <- project(vs, nterms = 1, ndraws = 4000)
+
+# fit single model -- no projection
+if(F){
+  fit.cn <- brm(y ~ cn, family=bernoulli(), data=scat,chains=4, iter=2000, cores = 4)
+  saveRDS(fit.cn, paste0(save_dir,"fit.cn.rds"))
+} else fit.cn <- readRDS(paste0(save_dir,"fit.cn.rds"))
+
+plot.ref <- as.data.frame(fit.hs) %>% select(Intercept = b_Intercept, cn = b_cn) %>% 
+  mcmc_areas() + labs(subtitle = "Reference") + xlim(c(-3.5,2))
+
+plot.cn <- as.data.frame(fit.cn) %>% select(Intercept = b_Intercept, cn = b_cn) %>% 
+  mcmc_areas() + labs(subtitle = "CN only") + xlim(c(-3.5,2))
+
+plot.proj <- mcmc_areas(as.matrix(proj))+ labs(subtitle = "Projected") + xlim(c(-3.5,2))
+
+ggarrange(plot.ref, plot.proj, plot.cn, nrow = 3, ncol= 1)
+
+# compare posteriors
+cn_post <- 
+  tibble(Ref = fit.hs %>% as_tibble() %>% pull(b_cn),
+       Proj = proj %>% as.matrix %>% {.[,"cn"]},
+       Sub = fit.cn %>% as_tibble() %>% pull(b_cn)) %>% 
+  mcmc_areas() +
+  labs(x = expression(phantom("N")*"(carbon-nitrogen ratio)")) +
+  theme_classic()
+
+
+ggarrange(vs_plot + labs(subtitle = "Projective step selection"), 
+          cn_post + labs(subtitle = "Posterior density", y = "Model"), 
+          labels = "AUTO",
+          ncol = 2)
+ggsave("plots/scat_BPI.pdf", width = 7.3, height = 3)
+
+
+
+#-------------------
+# bias-variance plot
+#-------------------
+
+arr1<- arrow(ends = "both", type = "closed", length = unit(2, "mm"))
+arr2<- arrow(type = "open", length = unit(2, "mm"))
+tibble(x = seq(0,5,0.01),
+       bias = exp(-x) + 0.2,
+       var = exp(1.2*x)/exp(1.2*5)+0.2,
+       tot = bias + var + 0.08) %>% 
+  ggplot(aes(x)) +
+  geom_line(aes(y = bias), col = brewer.pal(8,"Dark2")[1], arrow = arr1) +
+  geom_line(aes(y = var), col = brewer.pal(8,"Dark2")[2] , arrow = arr1) +
+  geom_line(aes(y = tot), arrow = arr1) +
+  annotate(geom = "text", col = brewer.pal(8,"Dark2")[1], x = 0.13, y = 0.8, label = expression(bias^2)) +
+  annotate(geom = "text", col = brewer.pal(8,"Dark2")[2], x = 0.3, y = 0.3, label = "variance") +
+  annotate(geom = "text", col = "black", x = 1.1, y = 1.1, label = "total error") +
+  ylim(c(0.13,1.2)) +
+  theme_classic() +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        axis.line = element_line(arrow = arr2)) +
+  labs(x = "Complexity", y = "Error") 
+
+ggsave("plots/bias_variance_plot.pdf", width = 4, height  = 3)
+
+display.brewer.pal(8,"Dark2") 
 

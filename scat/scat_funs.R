@@ -102,6 +102,7 @@ mcc <- function(cm){
 ##-------------------
 ## STAGE 2 functions
 ##-------------------
+
 # determine probability threshold value that maximises the TSS statistic
 tss_thresh <- function(tbl){
   probs<- tbl$probs
@@ -115,6 +116,7 @@ tss_thresh <- function(tbl){
   tss =  threshold %>% map_dbl(probs_to_tss)
   tibble(threshold,tss) %>% arrange(-tss) %>% slice(1) %>% as_vector
 }
+
 
 # Tunes tree depth and probability threshold for a random forest model
 # @cv_data: nested cv object from rsamples
