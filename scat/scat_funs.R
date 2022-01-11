@@ -1,6 +1,9 @@
-# prepare data
-# select and transform initial variables
-# remove NAs
+##---------------
+## prepare data
+##--------------- 
+
+# select and transform initial variables; remove NAs
+# merge response into two categories rather than three
 prep_data <- function(data){
   data %>% as_tibble %>% 
     select(y = Species, Number, Length, Diameter, Taper, TI, Mass, CN, Location, ropey, segmented) %>% 
@@ -22,9 +25,9 @@ prep_data <- function(data){
 
 
 # perform variable step selection using MLE and a supplied metric
-# @ vars: a vector variable names
-# @ cv_data: a vfold_cv object from the rsample package
-# @ metric: the score used compare and select variables at each step
+# @vars: a vector variable names
+# @cv_data: a vfold_cv object from the rsample package
+# @metric: the name of a function which computes a metric from a 2x2 confusion-matrix 
 step_glm <- function(vars, cv_data, metric){
   fit_fun <- fit_confusion_glm
   if(metric == "log_density") fit_fun <- fit_ll_glm else metric <- get(metric)
@@ -46,7 +49,7 @@ step_glm <- function(vars, cv_data, metric){
 }
 
 
-# Computes the L estimates of the selected confusion-matrix metric
+# Computes (L) estimates of the selected confusion-matrix metric
 # @cv_data: a repeated vfold_cv object from the rsample package with L repeats
 # @formula: if supplied, the same formula is applied across all CV samples, otherwise the formulas 
 #    must be defined row-by-row in a column called `form_glm` in the vfold_cv object
@@ -100,21 +103,21 @@ mcc <- function(cm){
 
 
 ##-------------------
-## STAGE 2 functions
+## STAGE 3 functions
 ##-------------------
 
-# determine probability threshold value that maximises the TSS statistic
-tss_thresh <- function(tbl){
+# determine probability threshold value that maximises the metric
+metric_thresh <- function(tbl, metric){
   probs<- tbl$probs
   y <- tbl$y
-  probs_to_tss <- function(thresh){
+  probs_to_metric <- function(thresh){
     pred  = as.numeric(probs >= thresh) %>% as.numeric %>% factor(levels = c(1,0))
     y = y %>% factor(levels = c(1,0))
-    tss(table(pred,y))
+    metric(table(pred,y))
   }
   threshold = (1:100)/100
-  tss =  threshold %>% map_dbl(probs_to_tss)
-  tibble(threshold,tss) %>% arrange(-tss) %>% slice(1) %>% as_vector
+  metric =  threshold %>% map_dbl(probs_to_metric)
+  tibble(threshold,metric) %>% arrange(-metric) %>% slice(1) %>% as_vector
 }
 
 
@@ -122,21 +125,21 @@ tss_thresh <- function(tbl){
 # @cv_data: nested cv object from rsamples
 # @mtry_vec: vector of candidate mtry values
 # @ntree: number of trees (fixed)
-tune_rf <- function(cv_data, mtry_vec, ntree){
+tune_rf <- function(cv_data, mtry_vec, ntree, metric){
   pbmclapply(cv_data$inner_resamples, function(sample){
     lapply(mtry_vec, function(m){
       sample[["splits"]] %>% map(
         ~ randomForest(y ~ ., mtry = m, data = analysis(.x), ntree = ntree) %>% 
           predict(newdata = assessment(.x), type = "prob") %>% 
           {tibble(probs = .[,"felid"], y = as.numeric(assessment(.x)$y =="felid"))}
-      ) %>% bind_rows %>% tss_thresh
-    }) %>% bind_rows %>% mutate(mtry = mtry_vec) %>% arrange(-tss) %>% slice(1)
+      ) %>% bind_rows %>% metric_thresh(metric)
+    }) %>% bind_rows %>% mutate(mtry = mtry_vec) %>% arrange(-metric) %>% slice(1)
   }, mc.cores = MAX_CORES) %>% bind_rows
 }
 
 
 # tune probability threshold and step-select variables for each (outer) training set
-tune_glm_step <- function(cv_data, vars){
+tune_glm_step <- function(cv_data, vars, metric){
   make_formula <- function(vars) paste("y ~ 1 + ",paste(vars,collapse=" + "))
     pbmclapply(cv_data_2$inner_resamples, function(sample){
     sel <- thresh <- c()
@@ -149,37 +152,35 @@ tune_glm_step <- function(cv_data, vars){
           ~ glm(make_formula(c(sel,var)), data = analysis(.x), family = binomial()) %>% 
             {tibble(probs = predict(.,newdata = assessment(.x), type = "response"), 
                     y = as.numeric(assessment(.x)$y != levels(assessment(.x)$y)[1]))}
-        ) %>% bind_rows %>% tss_thresh
+        ) %>% bind_rows %>% metric_thresh(metric)
       })
-      best = newfits %>% map("tss") %>% map_dbl(mean) %>% which.max()
+      best = newfits %>% map("metric") %>% map_dbl(mean) %>% which.max()
       thresh[step] = newfits[[best]][["threshold"]]
       sel[step] = setdiff(vars,sel)[best]
       message(paste("Selected:",sel[step]))
       metric_step[[step]] = newfits[[best]]
     }
-    best_model = metric_step %>% map_dbl("tss") %>% which.max
+    best_model = metric_step %>% map_dbl("metric") %>% which.max
     list(form = make_formula(sel[1:best_model]), 
          threshold = thresh[best_model])
   }, mc.cores = MAX_CORES) %>% bind_rows
 }
 
 # tune probability threshold and select variables for each (outer) training set
-tune_glm_all <- function(cv_data, models){
+tune_glm_all <- function(cv_data, models, metric){
   pbmclapply(cv_data$inner_resamples, function(sample){
     sapply(models, function(form){
       sample$splits %>% 
         map(~ glm(form, data = analysis(.x), family = binomial()) %>% 
               {tibble(probs = predict(.,newdata = assessment(.x), type = "response"), 
                       y = as.numeric(assessment(.x)$y != levels(assessment(.x)$y)[1]))}
-        ) %>% bind_rows %>% tss_thresh()
-    }) %>% t %>% as_tibble %>% mutate(form = unname(models), model = names(models)) %>% arrange(-tss) %>% slice(1)
+        ) %>% bind_rows %>% metric_thresh(metric)
+    }) %>% t %>% as_tibble %>% mutate(form = unname(models), model = names(models)) %>% arrange(-metric) %>% slice(1)
   }, mc.cores = MAX_CORES) %>% bind_rows()
 }
 
-
-
-# Fit the random forest model and return TSS estimates using tuned hyperparameters for each sample
-fit_rf <- function(cv_data, ntree = 500, type = c("all","best")){
+# Fit the random forest model and return metric estimates using tuned hyperparameters for each sample
+fit_rf <- function(cv_data, ntree = 500, type = c("all","best"), metric){
   make_formula = function(vars) paste("y ~ 1 + ",paste(vars,collapse=" + ")) %>% as.formula()
   type = type[1]
   get_confusion_matrix <- function(split, thresh, mtry, ntree){
@@ -200,7 +201,7 @@ fit_rf <- function(cv_data, ntree = 500, type = c("all","best")){
     as_tibble %>% 
     mutate(rep = cv_data$id) %>% 
     group_by(rep) %>% 
-    summarise(metric = matrix(c(sum(tp),sum(fn),sum(fp),sum(tn)),2,2) %>% tss) %>% 
+    summarise(metric = matrix(c(sum(tp),sum(fn),sum(fp),sum(tn)),2,2) %>% metric) %>% 
     mutate(rep = 1:n())
 }
 

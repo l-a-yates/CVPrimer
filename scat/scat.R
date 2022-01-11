@@ -30,10 +30,14 @@ vars <- names(scat %>% select(-y)); vars
 # Stage 1: use TSS with K-fold CV for variable selection for logistic model
 #-------------------------------------------------------------------------------
 
+run_date <- "2021_09_30" #
+save_dir <- paste0("fits_",run_date,"/")
+if(!dir.exists(save_dir)) dir.create(save_dir)
+
 # data for 10-fold CV repeated 100 times
 set.seed(770) ; cv_data_1 <- vfold_cv(scat,10,50) %>% mutate(thresh = 0.5)
 
-# Stage 1A : Step selection (TSS evaluation at each step)
+# Stage 1A : Step selection (metric evaluation at each step)
 if(run){
   varsel_mcc_1 <- step_glm(vars, cv_data_1, metric = "mcc") # approx 80 seconds with 45 cores
   varsel_tss_1 <- step_glm(vars, cv_data_1, metric = "tss") # approx 80 seconds with 45 cores
@@ -79,6 +83,9 @@ plot_model_comparisons(metric_plot_data_1, "se_mod") +
 # Stage 1B: Exhaustive selection (All 1024 models)
 #-------------------------------------------------
 
+run_date <- "2021_09_30" #
+save_dir <- paste0("fits_",run_date,"/")
+if(!dir.exists(save_dir)) dir.create(save_dir)
 set.seed(770) ; cv_data_1 <- vfold_cv(scat,10,50) %>% mutate(thresh = 0.5) # data for 10-fold CV repeated 100 times
 
 # specify all 2^10 = 1024 models
@@ -129,7 +136,7 @@ metric_by_dim %>%
     geom_point(aes(y = metric), shape = 1, size = 6, col = "black", data = ~ .x %>% filter(dim == best_mode_ose_dim)) +
     labs(subtitle = "CV estimates for scat models", x = "Number of parameters",y = toupper(metric))
 
-ggsave("plots/scat_mcc_modsel_2021_10_01.pdf", width = 90, height = 80, units = "mm", device = cairo_pdf()); dev.off()  
+#ggsave("plots/scat_mcc_modsel_2021_10_01.pdf", width = 90, height = 80, units = "mm", device = cairo_pdf()); dev.off()  
 
 # plot for supplementary materials
 # top X% of all models
@@ -161,11 +168,12 @@ metric_summary_all %>%
 ggsave(paste0("plots/scat_modsel_top",Xpercent,"_2021_10_01.pdf"), width = 180, height = 100, units = "mm", device = cairo_pdf()); dev.off()  
 
 # extract list of top 10% of model names for stage 2 analysis
-top10percent <- tss_summary_all %>%  # use only top 10 percent of models to reduce comp. time (small cheat)
+top10percent <- metric_summary_all %>%  # use only top 10 percent of models to reduce comp. time (small cheat)
   arrange(-metric) %>% 
   slice(1:(n()/10)) %>% 
   pull(model)
 
+#forms_all[top10percent] %>% saveRDS("fits_2022_01_11/forms_all_top10percent.rds")
 
 #------------------------------------------------------------------------------
 # Stage 1C: Penalised regression: lasso, ridge, and elastic net regularisation
@@ -318,22 +326,29 @@ ggpubr::ggarrange(plot_lasso, plot_ridge, nrow = 1)
 # Stage 2: Use nested CV to tune hyper-parameters and compare logistic regression to random forest
 #-------------------------------------------------------------------------------------------------
 
+
+run_date <- "2022_01_11" # nested analysis with MCC
+save_dir <- paste0("fits_",run_date,"/")
+if(!dir.exists(save_dir)) dir.create(save_dir)
 MAX_CORES <- 40
+run <- F
 
 # for each outer fold, use inner folds to tune threshold, mtry (rf only), and select variables.
 set.seed(7193) # sample(1e4,1)
 cv_data_2 <- nested_cv(scat, outside = vfold_cv(v = 10, repeats = 50), inside = vfold_cv(v = 10))
+vars <- names(scat %>% select(-y)); vars
+forms_top10 <- readRDS(paste0(save_dir,"forms_all_top10percent.rds"))
 
 # specify RF hyper-parameters
-ntree <- 800
+ntree <- 500
 mtry_vec <- 1:(ncol(scat)-1)
 
 # tune models 
 if(run){
-  rf_tune_values <- tune_rf(cv_data_2, mtry_vec, ntree)  # 1:43 seconds for 50 repeats with 45 cores
-  glm_step_tune_values <- tune_glm_step(cv_data_2, vars) # 1:38 seconds for 50 repeats with 45 cores
-  glm_all_tune_values <- tune_glm_all(cv_data_2,forms_all[top10percent])
-  saveRDS(glm_tune_values, paste0(save_dir,"glm_step_tune_values_",run_date,".rds"))
+  rf_tune_values <- tune_rf(cv_data_2, mtry_vec, ntree, metric = mcc)  # 1:17 seconds for 50 repeats with 40 cores
+  glm_step_tune_values <- tune_glm_step(cv_data_2, vars, metric = mcc) # 1:40 seconds for 50 repeats with 40 cores
+  glm_all_tune_values <- tune_glm_all(cv_data_2,forms_top10, metric = mcc) # 3:20 seconds for top 10% of model with 40 cores
+  saveRDS(glm_step_tune_values, paste0(save_dir,"glm_step_tune_values_",run_date,".rds"))
   saveRDS(rf_tune_values, paste0(save_dir,"rf_tune_values_",run_date,".rds"))
   saveRDS(glm_all_tune_values, paste0(save_dir,"glm_all_tune_values_",run_date,".rds"))
 } else{
@@ -341,8 +356,7 @@ if(run){
   rf_tune_values <- readRDS(paste0(save_dir,"rf_tune_values_",run_date,".rds"))
   glm_all_tune_values <- readRDS(paste0(save_dir,"glm_all_tune_values_",run_date,".rds"))
 }
-rf_tune_values
-glm_step_tune_values
+
 # add tuned parameters to cv_data
 cv_data_2$thresh_rf <- rf_tune_values$threshold
 cv_data_2$thresh_glm_step <- glm_step_tune_values$threshold
@@ -354,10 +368,10 @@ cv_data_2$form_glm_all <- glm_all_tune_values$form
 
 # fit models
 if(run){
-  fits_rf_best <- fit_rf(cv_data_2, ntree = ntree, type = "best") # 3 seconds with 45 cores
-  fits_rf_all<- fit_rf(cv_data_2, ntree = ntree, type = "all") # 2 seconds with 45 cores
-  fits_glm_step <- fit_confusion_glm(cv_data_2 %>% mutate(form_glm = form_glm_step, thresh = thresh_glm_step))
-  fits_glm_all <- fit_confusion_glm(cv_data_2 %>% mutate(form_glm = form_glm_all, thresh = thresh_glm_all))
+  fits_rf_best <- fit_rf(cv_data_2, ntree = ntree, type = "best", metric = mcc) # 3 seconds with 40 cores
+  fits_rf_all<- fit_rf(cv_data_2, ntree = ntree, type = "all", metric = mcc) # 2 seconds with 40 cores
+  fits_glm_step <- fit_confusion_glm(cv_data_2 %>% mutate(form_glm = form_glm_step, thresh = thresh_glm_step), metric = mcc)
+  fits_glm_all <- fit_confusion_glm(cv_data_2 %>% mutate(form_glm = form_glm_all, thresh = thresh_glm_all), metric = mcc)
   saveRDS(fits_rf_best, paste0(save_dir,"fits_rf_best_",run_date,".rds"))
   saveRDS(fits_rf_all, paste0(save_dir,"fits_rf_all_",run_date,".rds"))
   saveRDS(fits_glm_step, paste0(save_dir,"fits_glm_step_",run_date,".rds"))
@@ -379,12 +393,20 @@ tss_data_2 <- tibble(glm_step = fits_glm_step$metric,
 
 tss_plot_data_2 <- make_plot_data(tss_data_2, names(tss_data_2))
 
+#  model    metric     se se_diff se_mod
+#  <fct>     <dbl>  <dbl>   <dbl>  <dbl>
+#1 glm_step  0.250 0.0677  0.0969 0.0639
+#2 glm_all   0.250 0.0645  0.0946 0.0641
+#3 rf_best   0.375 0.0594  0      0     
+#4 rf_all    0.355 0.0639  0.0603 0.0410
+
 plot_model_comparisons(tss_plot_data_2, "se_mod") +
   labs(title = "Model comparison", subtitle = "Stage 2: nested CV with tuned hyper-parameter, score = TSS")
 
 # all-version
 tss_data_2_all <- tibble(glm_all = fits_glm_all$metric,
                      rf_all = fits_rf_all$metric)
+
 
 
 tss_plot_data_2_all <- make_plot_data(tss_data_2_all, names(tss_data_2_all))
@@ -394,6 +416,9 @@ plot_model_comparisons(tss_plot_data_2_all, "se_mod") +
        y = "TSS")
 
 tss_plot_data_2_all
+
+
+
 
 #--------------
 ## Stage 3: BPI
