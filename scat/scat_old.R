@@ -7,7 +7,7 @@ library(glmnet)
 rm(list=ls())
 options(na.action = "na.fail") # for MuMIn::dredge
 
-MAX_CORES <- 40
+MAX_CORES <- 10
 
 #----------
 # Data prep
@@ -16,13 +16,19 @@ MAX_CORES <- 40
 source("scat_funs.R")
 data(scat,package = "caret") # Morphometrics on scat data for bobcat, coyote and gray fox
 scat <- prep_data(scat) # N.B. fail = canid (factor-level 1), success = felid (factor-level 2)
+run_date <- "2021_09_30" # analysis for 1st draft
+#run_date <- "2021_12_23" # BPI
+save_dir <- paste0("fits_",run_date,"/")
+if(!dir.exists(save_dir)) dir.create(save_dir)
+
+
+
+#scat %>% select(where(is_double)) %>% cor
 vars <- names(scat %>% select(-y)); vars
-scat %>% select(where(is_double)) %>% cor
 
-
-#---------------------------------------------------------------------------------------
-# Part 1: use CM-based metrics with K-fold CV for variable selection for logistic model
-#---------------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------
+# Stage 1: use TSS with K-fold CV for variable selection for logistic model
+#-------------------------------------------------------------------------------
 
 run_date <- "2021_09_30" #
 save_dir <- paste0("fits_",run_date,"/")
@@ -32,13 +38,57 @@ run <- F # run or load model fits
 # data for 10-fold CV repeated 100 times
 set.seed(770) ; cv_data_1 <- vfold_cv(scat,10,50) %>% mutate(thresh = 0.5)
 
-## 1A: Exhaustive selection (All 1024 models)
+# Stage 1A : Step selection (metric evaluation at each step)
+if(run){
+  varsel_mcc_1 <- step_glm(vars, cv_data_1, metric = "mcc") # approx 80 seconds with 45 cores
+  varsel_tss_1 <- step_glm(vars, cv_data_1, metric = "tss") # approx 80 seconds with 45 cores
+  varsel_log_density_1 <- step_glm(vars, cv_data_1, metric = "log_density") # approx 50 seconds with 45 cores
+  saveRDS(varsel_tss_1, paste0(save_dir,"varsel_tss_1_",run_date,".rds"))
+  saveRDS(varsel_mcc_1, paste0(save_dir,"varsel_mcc_1_",run_date,".rds"))
+  saveRDS(varsel_log_density_1, paste0(save_dir,"varsel_log_density_1_",run_date,".rds"))
+} else{
+  varsel_tss_1 <- readRDS(paste0(save_dir,"varsel_tss_1_",run_date,".rds"))
+  varsel_mcc_1 <- readRDS(paste0(save_dir,"varsel_mcc_1_",run_date,".rds"))
+  varsel_log_density_1 <- readRDS(paste0(save_dir,"varsel_log_density_1_",run_date,".rds"))
+}
+
+metric <- "log_density"
+metric <- "mcc"
+varsel_metric_1 <- get(paste0("varsel_",metric,"_1"))
+metric_data_1 <- varsel_metric_1$metric_step %>% 
+  imap(~ .x %>% mutate(model = varsel_metric_1$sel[.y])) %>% 
+  bind_rows() %>% 
+  pivot_wider(names_from = model, values_from = metric) %>% 
+  select(-rep)
+metric_plot_data_1 <- make_plot_data(metric_data_1, varsel_metric_1$sel)
+sel_model_1 <- metric_plot_data_1 %>% filter(metric + se_mod >= max(metric)) %>% slice(1) %>% pull(model)
+
+# main plot for step selection
+metric_plot_data_1 %>% 
+  ggplot(aes(model)) +
+  geom_point(aes(y = metric), size = 2.5) +
+  geom_linerange(aes(ymin = metric - se_mod, ymax = metric + se_mod)) +
+  theme_bw() +
+  theme(panel.border = element_blank()) +
+  geom_point(aes(y = metric), shape = 1, size = 5, col = "blue", data = ~ .x %>% filter(model == sel_model_1)) +
+  labs(title = "Cross-validation estimates for scat models", x = "Predictor",y = toupper(metric))
+
+#ggsave("plots/scat_modsel_cv_v1.pdf", width = 180, height = 100, units = "mm", device = cairo_pdf()); dev.off()  
+
+# plot for supplementary materials
+plot_model_comparisons(metric_plot_data_1, "se_mod") +
+  labs(title = "Model comparison", subtitle = "Stage 1: Logistic only, threshold = 0.5, score = log_density")
+
+
+#-------------------------------------------------
+# Stage 1B: Exhaustive selection (All 1024 models)
+#-------------------------------------------------
 
 run_date <- "2021_09_30" #
 save_dir <- paste0("fits_",run_date,"/")
 if(!dir.exists(save_dir)) dir.create(save_dir)
-set.seed(770); cv_data_1 <- vfold_cv(scat,10,50) %>% mutate(thresh = 0.5) # data for 10-fold CV repeated 100 times
-run <- F
+set.seed(770) ; cv_data_1 <- vfold_cv(scat,10,50) %>% mutate(thresh = 0.5) # data for 10-fold CV repeated 100 times
+
 # specify all 2^10 = 1024 models
 forms_all <- glm(y~., data = scat, family = binomial) %>% MuMIn::dredge(evaluate = F) %>% map(as.formula)
 dim_all <- forms_all %>% map_dbl(~ .x %>% terms %>% attr("variables") %>% {length(.)-2})
@@ -93,6 +143,7 @@ metric_by_dim %>%
 # top X% of all models
 Xpercent = 10
 
+metric_summary_all
 best_mod_ose <- metric_summary_all %>% filter(metric + se_mod >= max(metric, na.rm = T)) %>% 
   filter(dim == min(dim)) %>% filter(metric == max(metric))
 
@@ -117,7 +168,7 @@ metric_summary_all %>%
 
 ggsave(paste0("plots/scat_modsel_top",Xpercent,"_2021_10_01.pdf"), width = 180, height = 100, units = "mm", device = cairo_pdf()); dev.off()  
 
-# extract and save list of the top 10% of model formulae for stage 3 analysis
+# extract list of top 10% of model names for stage 2 analysis
 top10percent <- metric_summary_all %>%  # use only top 10 percent of models to reduce comp. time (small cheat)
   arrange(-metric) %>% 
   slice(1:(n()/10)) %>% 
@@ -125,12 +176,11 @@ top10percent <- metric_summary_all %>%  # use only top 10 percent of models to r
 
 #forms_all[top10percent] %>% saveRDS("fits_2022_01_11/forms_all_top10percent.rds")
 
+#------------------------------------------------------------------------------
+# Stage 1C: Penalised regression: lasso, ridge, and elastic net regularisation
+#set.seed(770); cv_data_1 <- vfold_cv(scat,10,50) %>% mutate(thresh = 0.5)
+#------------------------------------------------------------------------------
 
-## 1B: Penalised regression: lasso, ridge, and elastic net regularisation
-
-run_date <- "2021_09_30" #
-save_dir <- paste0("fits_",run_date,"/")
-if(!dir.exists(save_dir)) dir.create(save_dir)
 set.seed(770) ; cv_data_1 <- vfold_cv(scat,10,50) %>% mutate(thresh = 0.5) # data for 10-fold CV repeated 100 times
 
 # compute out-sample-sample (i.e., CV) confusion-matrix entries for all lambda values for a given split
@@ -154,9 +204,12 @@ alpha = 1 # set alpha to change between reg types (1 - lasso, 0 - ridge)
 log_lambda <- seq(1.5,-4, length.out = 100)
 if(alpha == 1) log_lambda <- seq(-1.4,-4, length.out = 100) # lasso
 if(alpha <= 0.05) log_lambda <- seq(1.5,-1, length.out = 100)  # ridge
+
 lambda <- exp(log_lambda)
+#lambda <- seq(0.3,0.0004, length.out = 70) # fix path of parameter values for comparability
 
 # compute confusion-matrix entries and aggregate across folds within a given repetition
+
 cm_reg <- pbmclapply(1:nrow(cv_data_1), function(i) get_cm(cv_data_1$splits[[i]], cv_data_1$id[[i]], cv_data_1$id2[[i]], alpha = alpha),
            mc.cores = MAX_CORES) %>% bind_rows() %>% as_tibble() 
 
@@ -269,44 +322,9 @@ ggpubr::ggarrange(plot_lasso, plot_ridge, nrow = 1)
 #      units = "mm", device = cairo_pdf()); dev.off()
 
 
-# 1C: Step selection (metric evaluation at each step) -- NOT USED IN PAPER
-if(run){
-  varsel_mcc_1 <- step_glm(vars, cv_data_1, metric = "mcc") # approx 80 seconds with 45 cores
-  varsel_tss_1 <- step_glm(vars, cv_data_1, metric = "tss") # approx 80 seconds with 45 cores
-  varsel_log_density_1 <- step_glm(vars, cv_data_1, metric = "log_density") # approx 50 seconds with 45 cores
-  saveRDS(varsel_tss_1, paste0(save_dir,"varsel_tss_1_",run_date,".rds"))
-  saveRDS(varsel_mcc_1, paste0(save_dir,"varsel_mcc_1_",run_date,".rds"))
-  saveRDS(varsel_log_density_1, paste0(save_dir,"varsel_log_density_1_",run_date,".rds"))
-} else{
-  varsel_tss_1 <- readRDS(paste0(save_dir,"varsel_tss_1_",run_date,".rds"))
-  varsel_mcc_1 <- readRDS(paste0(save_dir,"varsel_mcc_1_",run_date,".rds"))
-  varsel_log_density_1 <- readRDS(paste0(save_dir,"varsel_log_density_1_",run_date,".rds"))
-}
-
-metric <- "mcc"  # "mcc" "log_density" "tss"
-varsel_metric_1 <- get(paste0("varsel_",metric,"_1"))
-metric_data_1 <- varsel_metric_1$metric_step %>% 
-  imap(~ .x %>% mutate(model = varsel_metric_1$sel[.y])) %>% 
-  bind_rows() %>% 
-  pivot_wider(names_from = model, values_from = metric) %>% 
-  select(-rep)
-metric_plot_data_1 <- make_plot_data(metric_data_1, varsel_metric_1$sel)
-sel_model_1 <- metric_plot_data_1 %>% filter(metric + se_mod >= max(metric)) %>% slice(1) %>% pull(model)
-
-# main plot for step selection
-metric_plot_data_1 %>% 
-  ggplot(aes(model)) +
-  geom_point(aes(y = metric), size = 2) +
-  geom_linerange(aes(ymin = metric - se_mod, ymax = metric + se_mod)) +
-  theme_classic() +
-  theme(panel.border = element_blank()) +
-  geom_point(aes(y = metric), shape = 1, size = 5, col = "blue", data = ~ .x %>% filter(model == sel_model_1)) +
-  labs(title = "Cross-validation estimates for scat models", x = "Predictor",y = toupper(metric))
-
-
 
 #-------------------------------------------------------------------------------------------------
-# Part 2: Use nested CV to tune hyper-parameters and compare logistic regression to random forest
+# Stage 2: Use nested CV to tune hyper-parameters and compare logistic regression to random forest
 #-------------------------------------------------------------------------------------------------
 
 
@@ -373,6 +391,7 @@ tss_data_2 <- tibble(glm_step = fits_glm_step$metric,
                      rf_best = fits_rf_best$metric,
                      rf_all = fits_rf_all$metric)
 
+
 tss_plot_data_2 <- make_plot_data(tss_data_2, names(tss_data_2))
 
 #  model    metric     se se_diff se_mod
@@ -385,10 +404,25 @@ tss_plot_data_2 <- make_plot_data(tss_data_2, names(tss_data_2))
 plot_model_comparisons(tss_plot_data_2, "se_mod") +
   labs(title = "Model comparison", subtitle = "Stage 2: nested CV with tuned hyper-parameter, score = TSS")
 
+# all-version
+tss_data_2_all <- tibble(glm_all = fits_glm_all$metric,
+                     rf_all = fits_rf_all$metric)
+
+
+
+tss_plot_data_2_all <- make_plot_data(tss_data_2_all, names(tss_data_2_all))
+
+plot_model_comparisons(tss_plot_data_2_all, "se_mod") +
+  labs(title = "Model comparison", subtitle = "Stage 2: nested CV with tuned hyper-parameter",
+       y = "TSS")
+
+tss_plot_data_2_all
+
+
 
 
 #--------------
-## Part 3: BPI
+## Stage 3: BPI
 #--------------
 library(projpred)
 library(brms)
