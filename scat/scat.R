@@ -3,11 +3,12 @@ library(tidyverse); library(tidymodels)
 library(pbmcapply); library(randomForest)
 library(mgcv); library(RColorBrewer)
 library(glmnet)
+library(dplyr); library(tidyr); library(stringr); library(forcats)
 
 rm(list=ls())
 options(na.action = "na.fail") # for MuMIn::dredge
 
-MAX_CORES <- 40
+MAX_CORES <- 10
 
 #----------
 # Data prep
@@ -19,24 +20,17 @@ scat <- prep_data(scat) # N.B. fail = canid (factor-level 1), success = felid (f
 vars <- names(scat %>% select(-y)); vars
 scat %>% select(where(is_double)) %>% cor
 
+save_dir <- paste0("files_scat","/")
 
 #---------------------------------------------------------------------------------------
 # Part 1: use CM-based metrics with K-fold CV for variable selection for logistic model
 #---------------------------------------------------------------------------------------
 
-run_date <- "2021_09_30" #
-save_dir <- paste0("fits_",run_date,"/")
-if(!dir.exists(save_dir)) dir.create(save_dir)
-run <- F # run or load model fits
-
-# data for 10-fold CV repeated 100 times
-set.seed(770) ; cv_data_1 <- vfold_cv(scat,10,50) %>% mutate(thresh = 0.5)
-
 ## 1A: Exhaustive selection (All 1024 models)
 
 run_date <- "2021_09_30" #
-save_dir <- paste0("fits_",run_date,"/")
-if(!dir.exists(save_dir)) dir.create(save_dir)
+#save_dir <- paste0("fits_",run_date,"/")
+#if(!dir.exists(save_dir)) dir.create(save_dir)
 set.seed(770); cv_data_1 <- vfold_cv(scat,10,50) %>% mutate(thresh = 0.5) # data for 10-fold CV repeated 100 times
 run <- F
 # specify all 2^10 = 1024 models
@@ -115,9 +109,9 @@ metric_summary_all %>%
   geom_hline(aes(yintercept = metric), col = "grey20", lty = "dashed", data = ~ .x %>% filter(metric == max(metric))) +
   labs(title = paste0("Top ", Xpercent,"% of scat models"), x= NULL, y = toupper(metric)) 
 
-ggsave(paste0("plots/scat_modsel_top",Xpercent,"_2021_10_01.pdf"), width = 180, height = 100, units = "mm", device = cairo_pdf()); dev.off()  
+#ggsave(paste0("plots/scat_modsel_top",Xpercent,"_2021_10_01.pdf"), width = 180, height = 100, units = "mm", device = cairo_pdf()); dev.off()  
 
-# extract and save list of the top 10% of model formulae for stage 3 analysis
+# extract and save list of the top 10% of model formulas for stage 2 analysis
 top10percent <- metric_summary_all %>%  # use only top 10 percent of models to reduce comp. time (small cheat)
   arrange(-metric) %>% 
   slice(1:(n()/10)) %>% 
@@ -125,46 +119,25 @@ top10percent <- metric_summary_all %>%  # use only top 10 percent of models to r
 
 #forms_all[top10percent] %>% saveRDS("fits_2022_01_11/forms_all_top10percent.rds")
 
-
+#------
 ## 1B: Penalised regression: lasso, ridge, and elastic net regularisation
+#------
 
 run_date <- "2021_09_30" #
 save_dir <- paste0("fits_",run_date,"/")
 if(!dir.exists(save_dir)) dir.create(save_dir)
+
 set.seed(770) ; cv_data_1 <- vfold_cv(scat,10,50) %>% mutate(thresh = 0.5) # data for 10-fold CV repeated 100 times
 
-# compute out-sample-sample (i.e., CV) confusion-matrix entries for all lambda values for a given split
-get_cm <- function(split,rep,fold, alpha){
-  glmnet(x = analysis(split) %>% select(-y) %>% as.data.frame() %>% makeX(),
-         y = analysis(split) %>% pull(y),
-         family = "binomial",
-         type.measure = "deviance", 
-         alpha = alpha,
-         lambda = lambda) %>%
-    confusion.glmnet(newx = assessment(split) %>% select(-y) %>% as.data.frame() %>% makeX(),
-                     newy = assessment(split) %>% pull(y)) %>% 
-    map_dfr(~ c(cm11 = try(.x["canid","canid"], silent = T) %>% ifelse(is.numeric(.),.,0),
-                cm12 = try(.x["canid","felid"], silent = T) %>% ifelse(is.numeric(.),.,0),
-                cm21 = try(.x["felid","canid"], silent = T) %>% ifelse(is.numeric(.),.,0),
-                cm22 = try(.x["felid","felid"], silent = T) %>% ifelse(is.numeric(.),.,0))) %>% 
-    mutate(rep = rep, fold = fold, lambda = lambda)
-}
-
-alpha = 1 # set alpha to change between reg types (1 - lasso, 0 - ridge)
-log_lambda <- seq(1.5,-4, length.out = 100)
-if(alpha == 1) log_lambda <- seq(-1.4,-4, length.out = 100) # lasso
-if(alpha <= 0.05) log_lambda <- seq(1.5,-1, length.out = 100)  # ridge
+# set ranges for regularisation parameter (lambda) values/ranges
+log_lambda <- seq(1.5,-4, length.out = 100) # uniformly spaced on the log scale
 lambda <- exp(log_lambda)
-
-# compute confusion-matrix entries and aggregate across folds within a given repetition
-cm_reg <- pbmclapply(1:nrow(cv_data_1), function(i) get_cm(cv_data_1$splits[[i]], cv_data_1$id[[i]], cv_data_1$id2[[i]], alpha = alpha),
-           mc.cores = MAX_CORES) %>% bind_rows() %>% as_tibble() 
 
 ## tune alpha
 ## lasso (alpha = 1) is the best performing (MCC) elastic-net model
 ## ridge performance improves a lot when using alpha = 0.05 instead of 0. 
+alpha_vec <-seq(0, 1, 0.025);
 if(F){
-  alpha_vec <-seq(0, 1, 0.025);
   metric_alpha <- lapply(alpha_vec, function(a){
     pbmclapply(1:nrow(cv_data_1), function(i) get_cm(cv_data_1$splits[[i]], cv_data_1$id[[i]], cv_data_1$id2[[i]], alpha = a),
                mc.cores = MAX_CORES) %>% bind_rows() %>% as_tibble() %>% 
@@ -176,17 +149,28 @@ if(F){
       filter(metric == max(metric, na.rm = T)) %>% 
       pull(metric)
   })
-  tibble(metric = metric_alpha %>% unlist, alpha = alpha_vec) %>% 
-    ggplot(aes(alpha,metric)) + geom_line() + theme_classic() +
-    labs(subtitle = "Tuning alpha for elastic-net regularisation (ridge = 0, lasso = 1)", y = "MCC")
-}
+  saveRDS(metric_alpha,"fits_scat/metric_alpha.rds")
+} else metric_alpha <- readRDS("files_scat/metric_alpha.rds")
+
+tibble(metric = metric_alpha %>% unlist, alpha = alpha_vec) %>% 
+  ggplot(aes(alpha,metric)) + geom_line() + theme_classic() +
+  labs(subtitle = "Tuning alpha for elastic-net regularisation (ridge = 0, lasso = 1)", y = "MCC")
+
+# set lambda for selected alpha
+alpha = 0 # set alpha (1 - lasso, 0 - ridge)
+if(alpha == 1) log_lambda <- seq(-1.4,-4, length.out = 100) # lasso
+if(alpha <= 0.05) log_lambda <- seq(1.5,-1, length.out = 100)  # (almost) ridge
+
+# compute confusion-matrix entries and aggregate across folds within a given repetition
+cm_reg <- pbmclapply(1:nrow(cv_data_1), function(i) get_cm(cv_data_1$splits[[i]], cv_data_1$id[[i]], cv_data_1$id2[[i]], 
+                                                           alpha = alpha, lambda = lambda),
+                     mc.cores = 10) %>% bind_rows() %>% as_tibble() 
 
 # compute metric for each repetition
 metric_reg <- cm_reg %>% 
   group_by(rep, lambda) %>% 
-  summarise(cm11 = sum(cm11), cm12 = sum(cm12), cm21 = sum(cm21), cm22 = sum(cm22), .groups = "keep") %>% 
-  summarise(metric = (cm11*cm22 - cm12*cm21)/(sqrt((cm11+cm12)*(cm11+cm21)*(cm22+cm12)*(cm22+cm21))), .groups = "drop")
-  
+  summarise(metric = matrix(c(sum(cm11),sum(cm21),sum(cm12),sum(cm22)),2,2) %>% mcc)
+
 # find lambda for best score
 lambda_best <- metric_reg %>% 
   group_by(lambda) %>%  
@@ -199,17 +183,23 @@ metric_best <- metric_reg %>%
   filter(lambda == lambda_best) %>%
   arrange(lambda,rep) %>% pull(metric)
 
-# compute standard error of differences
-metric_plot_data <- metric_reg %>%
+# compute summary statistics
+metric_plot_data <- metric_reg %>% 
   group_by(lambda) %>% 
-  arrange(lambda,rep) %>% 
-  mutate(metric_diff = metric - metric_best) %>% 
-  group_by(lambda) %>% 
-  summarise(sd = sd(metric_diff)/1, metric = mean(metric), metric_diff = mean(metric_diff))
+  arrange(lambda,rep) %>%
+  summarise(se_ose = sd(metric),
+            se_diff  = sd(metric - metric_best),
+            se_best = sd(metric_best),
+            rho_best_m = (se_diff^2 - se_ose^2 - se_best^2)/(-2*se_ose*se_best),
+            se_mod = sqrt(1-(rho_best_m))*se_best,
+            metric_diff = mean(metric - metric_best),
+            metric = mean(metric))
+
 
 metric_mod_ose <- metric_plot_data %>% 
-  filter(metric + sd > max(metric, na.rm = T)) %>% 
+  filter(metric + se_diff > max(metric, na.rm = T)) %>% 
   filter(lambda == max(lambda))
+
 
 plot_tuned <- metric_plot_data %>% 
   #filter(metric > 0.3) %>% 
@@ -217,7 +207,7 @@ plot_tuned <- metric_plot_data %>%
   #geom_linerange(aes(ymax = metric +sd, ymin = metric -sd), col = "grey70", size = 0.8) +
   geom_vline(aes(xintercept = metric_mod_ose$lambda %>% log), col = "grey70", lty = "dashed") +
   geom_vline(aes(xintercept = lambda_best %>% log), col = "grey70", lty = "dashed") +
-  geom_linerange(aes(ymax = metric +sd, ymin = metric -sd), col = "black", size = 0.5, data = metric_mod_ose) +
+  geom_linerange(aes(ymax = metric + se_diff, ymin = metric -se_diff), col = "black", size = 0.5, data = metric_mod_ose) +
   geom_line(aes(y = metric), col = "grey30", lty = "solid") + 
   #geom_point(aes(y = metric), size = 1) + 
   geom_point(aes(y = metric), shape = 1, size = 6, data = metric_mod_ose, col = "black") +
@@ -229,16 +219,19 @@ plot_tuned <- metric_plot_data %>%
   theme(panel.grid = element_blank(), 
         axis.text.x = element_blank()) 
 
+
+
 fit_glmnet <- glmnet(x = scat %>% select(-y) %>% as.data.frame() %>% makeX(),
        y = scat$y,
        family = "binomial",
        lambda = lambda,
-       alpha = alpha) #%>% plot(xvar = "lambda")
+       alpha = alpha)
+
 
 plot_est <- fit_glmnet$beta %>% as.matrix %>% t %>% as_tibble() %>% 
   mutate(lambda = log(lambda), metric = metric_plot_data$metric) %>% 
   pivot_longer(!any_of(c("lambda","metric")), values_to = "estimate", names_to = "coefficient") %>% 
-  filter(estimate != 0 | coefficient == "cn") %>% 
+  filter(estimate !=0 | coefficient == "cn") %>% 
   ggplot(aes(lambda,estimate)) + 
   geom_vline(aes(xintercept = metric_mod_ose$lambda %>% log), col = "grey70", lty = "dashed") +
   geom_vline(aes(xintercept = lambda_best %>% log), col = "grey70", lty = "dashed") +
@@ -248,73 +241,180 @@ plot_est <- fit_glmnet$beta %>% as.matrix %>% t %>% as_tibble() %>%
   #geom_point(aes(col = coefficient), shape = 1, size =6, data = ~ .x %>% filter(lambda == metric_mod_ose$lambda %>% log)) +
   geom_hline(aes(yintercept = 0), lty = "longdash") +
   labs(y = "Parameter estimates", x = expression(paste("log(",lambda,")"))) +
-  theme_classic()
+  theme_classic() +
+  theme(legend.position = "none")
 
-if(alpha == 0) plot_tuned_ridge <-  plot_tuned + labs(y = NULL, subtitle = "")
-if(alpha == 0) plot_est_ridge <-  plot_est + labs(y = NULL)+ theme(legend.position = "none")
-if(alpha == 1) plot_tuned_lasso <-  plot_tuned + labs(subtitle = "") + 
-  labs(y = expression("MCC"~phantom(hat(theta))))
- # theme(plot.margin = element_text(margin = ggplot2::margin(l = 3.5)))
-if(alpha == 1) plot_est_lasso <-  plot_est + theme(legend.position = "none") + labs(y  = expression(widehat(theta)))
 
-if(alpha == 1) plot_lasso <- ggpubr::ggarrange(plot_tuned_lasso, plot_est_lasso, ncol = 1, labels = c("A","C")) %>% 
-                ggpubr::annotate_figure(top = "Lasso")
+# format ridge
+if(alpha <= 0.05) {
+  x_lim <- c(-1,1.5)
+  y_lim <- c(-0.39,NA)
+  plot_tuned_ridge <-  plot_tuned + labs(y = NULL, subtitle = "") + xlim(x_lim)
+  plot_est_ridge <-  plot_est + labs(y = NULL)+ theme(legend.position = "none") + xlim(x_lim) + ylim(y_lim)
+  plot_ridge <- ggpubr::ggarrange(plot_tuned_ridge, plot_est_ridge, ncol = 1, labels = c("B","D")) %>% 
+    ggpubr::annotate_figure(top = "Ridge")
+}
 
-if(alpha == 0) plot_ridge <- ggpubr::ggarrange(plot_tuned_ridge, plot_est_ridge, ncol = 1, labels = c("B","D")) %>% 
-                ggpubr::annotate_figure(top = "Ridge")
-
+# format lasso
+if(alpha == 1) {
+  x_lim <- c(NA,-1.3)
+  plot_tuned_lasso <-  plot_tuned + labs(subtitle = "") +
+    labs(y = expression("MCC"~phantom(hat(theta)))) +
+    xlim(x_lim)
+  plot_est_lasso <-  plot_est + theme(legend.position = "none") + 
+    labs(y  = expression(widehat(theta))) + 
+    xlim(x_lim)
+  plot_lasso <- ggpubr::ggarrange(plot_tuned_lasso, plot_est_lasso, ncol = 1, labels = c("A","C")) %>% 
+    ggpubr::annotate_figure(top = "LASSO")
+}
 
 ggpubr::ggarrange(plot_lasso, plot_ridge, nrow = 1)
+
 #ggsave("plots/scat_reg_tune_2021_10_14.pdf", width = 180, height = 120, 
 #      units = "mm", device = cairo_pdf()); dev.off()
 
 
-# 1C: Step selection (metric evaluation at each step) -- NOT USED IN PAPER
-if(run){
-  varsel_mcc_1 <- step_glm(vars, cv_data_1, metric = "mcc") # approx 80 seconds with 45 cores
-  varsel_tss_1 <- step_glm(vars, cv_data_1, metric = "tss") # approx 80 seconds with 45 cores
-  varsel_log_density_1 <- step_glm(vars, cv_data_1, metric = "log_density") # approx 50 seconds with 45 cores
-  saveRDS(varsel_tss_1, paste0(save_dir,"varsel_tss_1_",run_date,".rds"))
-  saveRDS(varsel_mcc_1, paste0(save_dir,"varsel_mcc_1_",run_date,".rds"))
-  saveRDS(varsel_log_density_1, paste0(save_dir,"varsel_log_density_1_",run_date,".rds"))
-} else{
-  varsel_tss_1 <- readRDS(paste0(save_dir,"varsel_tss_1_",run_date,".rds"))
-  varsel_mcc_1 <- readRDS(paste0(save_dir,"varsel_mcc_1_",run_date,".rds"))
-  varsel_log_density_1 <- readRDS(paste0(save_dir,"varsel_log_density_1_",run_date,".rds"))
+#--------------
+## Part 2: BPI
+#--------------
+
+library(projpred)
+library(brms)
+library(ggpubr)
+library(bayesplot)
+
+run_date <- "2021_12_23" # BPI
+
+# set horse hyperparameters
+n <- nrow(scat); n # 91
+D <- length(vars); D # 10
+p0 <- 3 # prior guess for the number of relevant variables
+tau0 <- p0/(D-p0) * 1/sqrt(n) # scale for tau (notice that stan_glm will automatically scale this by sigma)
+
+# fit a reference model
+if(F){
+  fit.hs <- brm(y ~ ., family=bernoulli(), data=scat,
+                  prior=prior(horseshoe(scale_global = tau0, scale_slab = 1), class=b),
+                  chains=4, iter=2000, cores = 4,save_pars = save_pars(all = TRUE))
+  
+  fit.lasso <- brm(y ~ ., family=bernoulli(), data=scat,
+                prior= set_prior("lasso(1)"),
+                chains=4, iter=2000, cores = 4,save_pars = save_pars(all = TRUE))
+  
+  fit.ridge <- brm(y ~ ., family=bernoulli(), 
+                  prior = prior(normal(0,10)), 
+                  data=scat, chains=4, iter=2000, cores = 4,
+                  save_pars = save_pars(all = TRUE))
+  
+  fit.flat <- brm(y ~ ., family=bernoulli(), 
+                   data=scat, chains=4, iter=2000, cores = 4,
+                   save_pars = save_pars(all = TRUE))
+  
+  saveRDS(fit.hs, paste0(save_dir,"fit.hs.rds"))
+  saveRDS(fit.lasso, paste0(save_dir,"fit.lasso.rds"))
+  saveRDS(fit.ridge, paste0(save_dir,"fit.ridge.rds"))
+  saveRDS(fit.flat, paste0(save_dir,"fit.flat.rds"))
+} else {
+  fit.hs <- readRDS(paste0(save_dir,"fit.hs.rds"))
+  fit.lasso <- readRDS(paste0(save_dir,"fit.lasso.rds"))
+  fit.ridge <- readRDS(paste0(save_dir,"fit.ridge.rds"))
+  fit.flat <- readRDS(paste0(save_dir,"fit.flat.rds"))
 }
 
-metric <- "mcc"  # "mcc" "log_density" "tss"
-varsel_metric_1 <- get(paste0("varsel_",metric,"_1"))
-metric_data_1 <- varsel_metric_1$metric_step %>% 
-  imap(~ .x %>% mutate(model = varsel_metric_1$sel[.y])) %>% 
-  bind_rows() %>% 
-  pivot_wider(names_from = model, values_from = metric) %>% 
-  select(-rep)
-metric_plot_data_1 <- make_plot_data(metric_data_1, varsel_metric_1$sel)
-sel_model_1 <- metric_plot_data_1 %>% filter(metric + se_mod >= max(metric)) %>% slice(1) %>% pull(model)
 
-# main plot for step selection
-metric_plot_data_1 %>% 
-  ggplot(aes(model)) +
-  geom_point(aes(y = metric), size = 2) +
-  geom_linerange(aes(ymin = metric - se_mod, ymax = metric + se_mod)) +
+# loo check
+fits <- list(hs = fit.hs, lasso = fit.lasso, ridge = fit.ridge, flat = fit.flat)
+
+if(F){
+  future::plan("multisession", workers = 10)
+  fits.loo <- fits %>% map(loo, reloo = T, future = T) # hs (best) -> lasso -> weak -> flat (worst)
+  saveRDS(fits.loo, paste0(save_dir,"fits.loo.rds"))
+  
+} else {
+  fits.loo <- readRDS(paste0(save_dir,"fits.loo.rds"))
+}
+
+fits.loo %>% loo_compare %>% print(simplify = F)
+
+# plot posteriors of hs model
+plot_post <- function(fit){
+  fit %>% as_tibble %>% select(-starts_with("l")) %>% mcmc_areas(area_method = "scaled", prob_outer = 0.98) +
+    xlim(c(-2.8,2)) +
+    theme_classic()
+}
+
+ggarrange(
+  fit.ridge %>% plot_post + labs(subtitle = "Weakly informative"),
+  fit.lasso %>% plot_post + labs(subtitle = "Lasso"),
+  fit.hs %>% plot_post + labs(subtitle = "Horseshoe"),
+  ncol = 1,
+  labels = "AUTO"
+)
+# ggsave("plots/scat_reg_post.pdf", plot = ., width = 150, height = 200, units = "mm")
+
+
+# varsel and projection
+if(F){
+  vs <- cv_varsel(fit.hs, cv_method = "LOO", method = "forward")
+  saveRDS(vs,paste0(save_dir,"vs.rds"))
+} else vs <- readRDS(paste0(save_dir,"vs.rds"))
+
+# plot varsel
+vs_plot <- 
+  vs %>% plot(stats = c("elpd"), deltas = T) + 
   theme_classic() +
-  theme(panel.border = element_blank()) +
-  geom_point(aes(y = metric), shape = 1, size = 5, col = "blue", data = ~ .x %>% filter(model == sel_model_1)) +
-  labs(title = "Cross-validation estimates for scat models", x = "Predictor",y = toupper(metric))
+  theme(strip.text = element_blank(),
+        strip.background = element_blank(),
+        legend.position = "none") +
+  labs(y = expression(Delta*"ELPD"))
+
+
+vs_plot
+solution_terms(vs)
+
+# project onto 1 parameter submodel
+proj <- project(vs, nterms = 1, ndraws = 4000)
+
+# fit single model -- no projection
+if(F){
+  fit.cn <- brm(y ~ cn, family=bernoulli(), data=scat,chains=4, iter=2000, cores = 4)
+  saveRDS(fit.cn, paste0(save_dir,"fit.cn.rds"))
+} else fit.cn <- readRDS(paste0(save_dir,"fit.cn.rds"))
+
+plot.ref <- as.data.frame(fit.hs) %>% select(Intercept = b_Intercept, cn = b_cn) %>% 
+  mcmc_areas() + labs(subtitle = "Reference") + xlim(c(-3.5,2))
+
+plot.cn <- as.data.frame(fit.cn) %>% select(Intercept = b_Intercept, cn = b_cn) %>% 
+  mcmc_areas() + labs(subtitle = "CN only") + xlim(c(-3.5,2))
+
+plot.proj <- mcmc_areas(as.matrix(proj))+ labs(subtitle = "Projected") + xlim(c(-3.5,2))
+
+ggarrange(plot.ref, plot.proj, plot.cn, nrow = 3, ncol= 1)
+
+# compare posteriors
+cn_post <- 
+  tibble(ref = fit.hs %>% as_tibble() %>% pull(b_cn),
+       proj = proj %>% as.matrix %>% {.[,"cn"]},
+       `non-proj` = fit.cn %>% as_tibble() %>% pull(b_cn)) %>% 
+  mcmc_areas() +
+  labs(x = expression(theta["carbon-nitrogen ratio"])) +
+  theme_classic()
+
+
+ggarrange(vs_plot + labs(subtitle = "Projective step selection"), 
+          cn_post + labs(subtitle = "Posterior density", y = "Model"), 
+          labels = "AUTO",
+          ncol = 2)
+
+#ggsave("plots/scat_BPI.pdf", width = 7.3, height = 3)
 
 
 
 #-------------------------------------------------------------------------------------------------
-# Part 2: Use nested CV to tune hyper-parameters and compare logistic regression to random forest
+# Part 3: nested CV to compare logistic regression to random forest
 #-------------------------------------------------------------------------------------------------
-
 
 run_date <- "2022_01_11" # nested analysis with MCC
-save_dir <- paste0("fits_",run_date,"/")
-if(!dir.exists(save_dir)) dir.create(save_dir)
-MAX_CORES <- 40
-run <- F
 
 # for each outer fold, use inner folds to tune threshold, mtry (rf only), and select variables.
 set.seed(7193) # sample(1e4,1)
@@ -340,6 +440,7 @@ if(run){
   glm_all_tune_values <- readRDS(paste0(save_dir,"glm_all_tune_values_",run_date,".rds"))
 }
 
+
 # add tuned parameters to cv_data
 cv_data_2$thresh_rf <- rf_tune_values$threshold
 cv_data_2$thresh_glm_step <- glm_step_tune_values$threshold
@@ -348,6 +449,9 @@ cv_data_2$mtry_rf <- rf_tune_values$mtry
 cv_data_2$form_glm_step <- glm_step_tune_values$form
 cv_data_2$form_glm_all <- glm_all_tune_values$form
 
+cv_data_2 %>% pull(mtry_rf) %>% table
+cv_data_2 %>% pull(form_glm_step) %>% str_split(" +") %>% map_dbl(~ .x %in% vars %>% sum) %>% table
+#readRDS("files_scat/cv_data_2.rds")
 
 # fit models
 if(run){
@@ -362,8 +466,8 @@ if(run){
 } else {
   fits_rf_best <- readRDS(paste0(save_dir,"fits_rf_best_",run_date,".rds"))
   fits_rf_all <- readRDS(paste0(save_dir,"fits_rf_all_",run_date,".rds"))
-  fits_glm_step <- readRDS(paste0(save_dir,"fits_glm_step",run_date,".rds"))
-  fits_glm_all <- readRDS(paste0(save_dir,"fits_glm_",run_date,".rds"))
+  fits_glm_step <- readRDS(paste0(save_dir,"fits_glm_step_",run_date,".rds"))
+  fits_glm_all <- readRDS(paste0(save_dir,"fits_glm_all_",run_date,".rds"))
 }
 
 
@@ -384,118 +488,6 @@ tss_plot_data_2 <- make_plot_data(tss_data_2, names(tss_data_2))
 
 plot_model_comparisons(tss_plot_data_2, "se_mod") +
   labs(title = "Model comparison", subtitle = "Stage 2: nested CV with tuned hyper-parameter, score = TSS")
-
-
-
-#--------------
-## Part 3: BPI
-#--------------
-library(projpred)
-library(brms)
-library(ggpubr)
-library(bayesplot)
-
-run_date <- "2021_12_23" # BPI
-save_dir <- paste0("fits_",run_date,"/")
-if(!dir.exists(save_dir)) dir.create(save_dir)
-
-n <- nrow(scat); n # 91
-D <- length(vars); D # 10
-p0 <- 3 # prior guess for the number of relevant variables
-tau0 <- p0/(D-p0) * 1/sqrt(n) # scale for tau (notice that stan_glm will automatically scale this by sigma)
-
-# fit a reference model
-if(F){
-  fit.hs <- brm(y ~ ., family=bernoulli(), data=scat,
-                  prior=prior(horseshoe(scale_global = tau0, scale_slab = 1), class=b),
-                  chains=4, iter=2000, cores = 4)
-  
-  fit.lasso <- brm(y ~ ., family=bernoulli(), data=scat,
-                prior= set_prior("lasso(1)"),
-                chains=4, iter=2000, cores = 4)
-  
-  fit.weak <- brm(y ~ ., family=bernoulli(), data=scat, chains=4, iter=2000, cores = 4)
-  
-  saveRDS(fit.hs, paste0(save_dir,"fit.hs.rds"))
-  saveRDS(fit.lasso, paste0(save_dir,"fit.lasso.rds"))
-  saveRDS(fit.weak, paste0(save_dir,"fit.weak.rds"))
-}
-
-
-# loo check
-fits <- list(hs = fit.hs, lasso = fit.lasso, weak = fit.weak)
-fits %>% map(loo, cores = 10) %>% loo_compare() # hs (best) -> lasso -> weak (worst)
-
-
-
-# plot posteriors of hs model
-plot_post <- function(fit){
-  fit %>% as_tibble %>% select(-starts_with("l")) %>% mcmc_areas(area_method = "scaled", prob_outer = 0.98) +
-    xlim(c(-2.8,2)) +
-    theme_classic()
-}
-
-ggarrange(
-  fit.weak %>% plot_post + labs(subtitle = "Weakly informative"),
-  fit.lasso %>% plot_post + labs(subtitle = "Lasso"),
-  fit.hs %>% plot_post + labs(subtitle = "Horseshoe"),
-  ncol = 1,
-  labels = "AUTO"
-) %>% 
-  ggsave("plots/scat_reg_post.pdf", plot = ., width = 150, height = 200, units = "mm")
-
-
-# varsel and projection
-if(F){
-  vs <- cv_varsel(fit.hs, cv_method = "LOO", method = "forward")
-  saveRDS(vs,paste0(save_dir,"vs.rds"))
-} else vs <- readRDS(paste0(save_dir,"vs.rds"))
-
-# plot varsel
-vs_plot <- 
-  vs %>% plot(stats = c("elpd"), deltas = T) + 
-  theme_classic() +
-  theme(strip.text = element_blank(),
-        strip.background = element_blank(),
-        legend.position = "none") +
-  labs(y = expression(Delta*"ELPD"))
-
-solution_terms(vs)
-
-# project onto 1 parameter submodel
-proj <- project(vs, nterms = 1, ndraws = 4000)
-
-# fit single model -- no projection
-if(F){
-  fit.cn <- brm(y ~ cn, family=bernoulli(), data=scat,chains=4, iter=2000, cores = 4)
-  saveRDS(fit.cn, paste0(save_dir,"fit.cn.rds"))
-} else fit.cn <- readRDS(paste0(save_dir,"fit.cn.rds"))
-
-plot.ref <- as.data.frame(fit.hs) %>% select(Intercept = b_Intercept, cn = b_cn) %>% 
-  mcmc_areas() + labs(subtitle = "Reference") + xlim(c(-3.5,2))
-
-plot.cn <- as.data.frame(fit.cn) %>% select(Intercept = b_Intercept, cn = b_cn) %>% 
-  mcmc_areas() + labs(subtitle = "CN only") + xlim(c(-3.5,2))
-
-plot.proj <- mcmc_areas(as.matrix(proj))+ labs(subtitle = "Projected") + xlim(c(-3.5,2))
-
-ggarrange(plot.ref, plot.proj, plot.cn, nrow = 3, ncol= 1)
-
-# compare posteriors
-cn_post <- 
-  tibble(Ref = fit.hs %>% as_tibble() %>% pull(b_cn),
-       Proj = proj %>% as.matrix %>% {.[,"cn"]},
-       Sub = fit.cn %>% as_tibble() %>% pull(b_cn)) %>% 
-  mcmc_areas() +
-  labs(x = expression(phantom("N")*"(carbon-nitrogen ratio)")) +
-  theme_classic()
-
-
-ggarrange(vs_plot + labs(subtitle = "Projective step selection"), 
-          cn_post + labs(subtitle = "Posterior density", y = "Model"), 
-          labels = "AUTO",
-          ncol = 2)
-ggsave("plots/scat_BPI.pdf", width = 7.3, height = 3)
 
 
 
@@ -523,7 +515,5 @@ tibble(x = seq(0,5,0.01),
         axis.line = element_line(arrow = arr2)) +
   labs(x = "Complexity", y = "Error") 
 
-ggsave("plots/bias_variance_plot.pdf", width = 4, height  = 3)
-
-display.brewer.pal(8,"Dark2") 
+#ggsave("plots/bias_variance_plot.pdf", width = 4, height  = 3)
 

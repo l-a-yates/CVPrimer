@@ -106,6 +106,23 @@ mcc <- function(cm){
 ## STAGE 3 functions
 ##-------------------
 
+# compute out-sample-sample (i.e., CV) confusion-matrix entries for all lambda values for a given split
+get_cm <- function(split,rep,fold, alpha, lambda){
+  glmnet(x = analysis(split) %>% select(-y) %>% as.data.frame() %>% makeX(),
+         y = analysis(split) %>% pull(y),
+         family = "binomial",
+         type.measure = "deviance", 
+         alpha = alpha,
+         lambda = lambda) %>%
+    confusion.glmnet(newx = assessment(split) %>% select(-y) %>% as.data.frame() %>% makeX(),
+                     newy = assessment(split) %>% pull(y)) %>% 
+    map_dfr(~ c(cm11 = try(.x["canid","canid"], silent = T) %>% ifelse(is.numeric(.),.,0),
+                cm12 = try(.x["canid","felid"], silent = T) %>% ifelse(is.numeric(.),.,0),
+                cm21 = try(.x["felid","canid"], silent = T) %>% ifelse(is.numeric(.),.,0),
+                cm22 = try(.x["felid","felid"], silent = T) %>% ifelse(is.numeric(.),.,0))) %>% 
+    mutate(rep = rep, fold = fold, lambda = lambda)
+}
+
 # determine probability threshold value that maximises the metric
 metric_thresh <- function(tbl, metric){
   probs<- tbl$probs
