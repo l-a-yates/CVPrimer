@@ -5,5 +5,5 @@ This repository provides tutorials and code to reproduce the analyses in the man
 ## Tutorials
 
 These tutorials provide a step-by-step guide to applying cross validation for model selection, reproducing the two case studies in the manuscript
-+   [scat classification](https://github.com/l-a-yates/CVPrimer/tree/main/scat/tutorial_scat.html)
++   [scat classification](https://l-a-yates.github.io/CVPrimer/scat/tutorial_scat.html)
 +   pinfish growth
