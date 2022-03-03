@@ -13,13 +13,13 @@ select <- dplyr::select
 options(na.action = "na.fail") # for MuMIn::dredge
 ```
 ## Overview
-This page is part of a code repository to reproduce the example analyses in the manuscript  "Cross validation for model selection: a primer with examples from ecology" by L.A. Yates, Z. Aandahl, S.A.Richards, and B.W.Brook (2022). 
+This page is part of a code repository to reproduce the example analyses in the manuscript  "Cross validation for model selection: a primer with examples from ecology" by L.A. Yates, Z. Aandahl, S.A.Richards, and B.W.Brook (2022). This tutorial is designed to be used alongside the manuscript.  
 
 The `scat` dataset is sourced from the R package `caret`. @Reid2015 collected animal feces in coastal California. The data consist of DNA verified species designations as well as fields related to the time and place of the collection and the morphology of the scat itself. In this example, the aim of the analysis is to predict the biological family (\emph{felid} or \emph{canid}) for each scat observation, based on eight morphological characteristics, the scat location, and the carbon-to-nitrogen ratio (see Table 1 of the original data publication for variable descriptions). 
 
 ## Load and prepare scat data
 
-Data preparations include: collapsing the response from three categories to two (i.e. binary), centering and scaling numerical predictors, and log-transforming two of the variables (based on advice in the original publication). 
+Data preparations include: collapsing the response from three categories to two (i.e. binary classification), centering and scaling numerical predictors, and log-transforming two of the variables (based on advice in the original publication). 
 
 
 ```{r}
@@ -652,5 +652,11 @@ cv_data_2$form_glm_step %>% str_split(" +") %>% map_dbl(~ .x %in% vars %>% sum) 
 
 ```
 
+
+## Session Information
+
+```{r} 
+sessionInfo()
+```
 
 

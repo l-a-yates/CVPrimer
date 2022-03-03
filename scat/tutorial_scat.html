@@ -195,12 +195,12 @@ pre code {
 
 <div id="overview" class="section level2">
 <h2>Overview</h2>
-<p>This page is part of a code repository to reproduce the example analyses in the manuscript “Cross validation for model selection: a primer with examples from ecology” by L.A. Yates, Z. Aandahl, S.A.Richards, and B.W.Brook (2022).</p>
+<p>This page is part of a code repository to reproduce the example analyses in the manuscript “Cross validation for model selection: a primer with examples from ecology” by L.A. Yates, Z. Aandahl, S.A.Richards, and B.W.Brook (2022). This tutorial is designed to be used alongside the manuscript.</p>
 <p>The <code>scat</code> dataset is sourced from the R package <code>caret</code>. <span class="citation">Reid (2015)</span> collected animal feces in coastal California. The data consist of DNA verified species designations as well as fields related to the time and place of the collection and the morphology of the scat itself. In this example, the aim of the analysis is to predict the biological family ( or ) for each scat observation, based on eight morphological characteristics, the scat location, and the carbon-to-nitrogen ratio (see Table 1 of the original data publication for variable descriptions).</p>
 </div>
 <div id="load-and-prepare-scat-data" class="section level2">
 <h2>Load and prepare scat data</h2>
-<p>Data preparations include: collapsing the response from three categories to two (i.e. binary), centering and scaling numerical predictors, and log-transforming two of the variables (based on advice in the original publication).</p>
+<p>Data preparations include: collapsing the response from three categories to two (i.e. binary classification), centering and scaling numerical predictors, and log-transforming two of the variables (based on advice in the original publication).</p>
 <pre class="r"><code>data(scat,package = &quot;caret&quot;)
 
 prep_data &lt;- function(data){
@@ -805,6 +805,91 @@ cv_data_2$mtry_rf %&gt;% table # random forest</code></pre>
 <pre><code>## .
 ##   1   2   3   4   5   6   7   8   9  10 
 ##  39 110  96  94  71  58  18   9   4   1</code></pre>
+</div>
+<div id="session-information" class="section level2">
+<h2>Session Information</h2>
+<pre class="r"><code>sessionInfo()</code></pre>
+<pre><code>## R version 4.1.2 (2021-11-01)
+## Platform: x86_64-pc-linux-gnu (64-bit)
+## Running under: Ubuntu 20.04.4 LTS
+## 
+## Matrix products: default
+## BLAS:   /usr/lib/x86_64-linux-gnu/blas/libblas.so.3.9.0
+## LAPACK: /usr/lib/x86_64-linux-gnu/lapack/liblapack.so.3.9.0
+## 
+## locale:
+##  [1] LC_CTYPE=en_AU.UTF-8       LC_NUMERIC=C              
+##  [3] LC_TIME=en_AU.UTF-8        LC_COLLATE=en_AU.UTF-8    
+##  [5] LC_MONETARY=en_AU.UTF-8    LC_MESSAGES=en_AU.UTF-8   
+##  [7] LC_PAPER=en_AU.UTF-8       LC_NAME=C                 
+##  [9] LC_ADDRESS=C               LC_TELEPHONE=C            
+## [11] LC_MEASUREMENT=en_AU.UTF-8 LC_IDENTIFICATION=C       
+## 
+## attached base packages:
+## [1] stats     graphics  grDevices utils     datasets  methods   base     
+## 
+## other attached packages:
+##  [1] bayesplot_1.8.1    projpred_2.0.2     brms_2.16.3        Rcpp_1.0.8        
+##  [5] glmnet_4.1-2       Matrix_1.4-0       knitr_1.37         kableExtra_1.3.4  
+##  [9] yardstick_0.0.9    workflowsets_0.1.0 workflows_0.2.4    tune_0.1.6        
+## [13] rsample_0.1.1      recipes_0.2.0      parsnip_0.1.7      modeldata_0.1.1   
+## [17] infer_1.0.0        dials_0.0.10       scales_1.1.1       broom_0.7.12      
+## [21] tidymodels_0.1.4   forcats_0.5.1      stringr_1.4.0      dplyr_1.0.8       
+## [25] purrr_0.3.4        readr_2.1.2        tidyr_1.2.0        tibble_3.1.6      
+## [29] ggplot2_3.3.5      tidyverse_1.3.1   
+## 
+## loaded via a namespace (and not attached):
+##   [1] utf8_1.2.2           lme4_1.1-28          tidyselect_1.1.2    
+##   [4] htmlwidgets_1.5.4    grid_4.1.2           pROC_1.18.0         
+##   [7] munsell_0.5.0        codetools_0.2-18     DT_0.21             
+##  [10] future_1.24.0        miniUI_0.1.1.1       withr_2.4.3         
+##  [13] Brobdingnag_1.2-7    colorspace_2.0-3     highr_0.9           
+##  [16] rstudioapi_0.13      stats4_4.1.2         ggsignif_0.6.3      
+##  [19] listenv_0.8.0        labeling_0.4.2       rstan_2.21.2        
+##  [22] DiceDesign_1.9       farver_2.1.0         bridgesampling_1.1-2
+##  [25] coda_0.19-4          parallelly_1.30.0    vctrs_0.3.8         
+##  [28] generics_0.1.2       ipred_0.9-12         xfun_0.29           
+##  [31] R6_2.5.1             markdown_1.1         gamm4_0.2-6         
+##  [34] lhs_1.1.4            assertthat_0.2.1     promises_1.2.0.1    
+##  [37] nnet_7.3-17          gtable_0.3.0         globals_0.14.0      
+##  [40] processx_3.5.2       timeDate_3043.102    rlang_1.0.1         
+##  [43] systemfonts_1.0.4    splines_4.1.2        rstatix_0.7.0       
+##  [46] checkmate_2.0.0      inline_0.3.19        yaml_2.3.5          
+##  [49] reshape2_1.4.4       abind_1.4-5          modelr_0.1.8        
+##  [52] threejs_0.3.3        crosstalk_1.2.0      backports_1.4.1     
+##  [55] httpuv_1.6.5         rsconnect_0.8.25     tensorA_0.36.2      
+##  [58] tools_4.1.2          lava_1.6.10          ellipsis_0.3.2      
+##  [61] jquerylib_0.1.4      posterior_1.2.0      ggridges_0.5.3      
+##  [64] plyr_1.8.6           base64enc_0.1-3      ps_1.6.0            
+##  [67] prettyunits_1.1.1    ggpubr_0.4.0         rpart_4.1.16        
+##  [70] cowplot_1.1.1        zoo_1.8-9            haven_2.4.3         
+##  [73] fs_1.5.2             furrr_0.2.3          magrittr_2.0.2      
+##  [76] colourpicker_1.1.1   reprex_2.0.1         GPfit_1.0-8         
+##  [79] mvtnorm_1.1-3        matrixStats_0.61.0   hms_1.1.1           
+##  [82] shinyjs_2.1.0        mime_0.12            evaluate_0.15       
+##  [85] xtable_1.8-4         shinystan_2.5.0      readxl_1.3.1        
+##  [88] gridExtra_2.3        shape_1.4.6          rstantools_2.1.1    
+##  [91] MuMIn_1.46.0         compiler_4.1.2       V8_4.0.0            
+##  [94] crayon_1.5.0         minqa_1.2.4          StanHeaders_2.21.0-7
+##  [97] htmltools_0.5.2      mgcv_1.8-39          later_1.3.0         
+## [100] tzdb_0.2.0           RcppParallel_5.1.5   lubridate_1.8.0     
+## [103] DBI_1.1.2            corrplot_0.92        dbplyr_2.1.1        
+## [106] MASS_7.3-55          boot_1.3-28          car_3.0-12          
+## [109] cli_3.2.0            parallel_4.1.2       gower_1.0.0         
+## [112] igraph_1.2.11        pkgconfig_2.0.3      xml2_1.3.3          
+## [115] foreach_1.5.2        dygraphs_1.1.1.6     svglite_2.1.0       
+## [118] bslib_0.3.1          hardhat_0.2.0        webshot_0.5.2       
+## [121] prodlim_2019.11.13   rvest_1.0.2          distributional_0.3.0
+## [124] callr_3.7.0          digest_0.6.29        rmarkdown_2.11      
+## [127] cellranger_1.1.0     curl_4.3.2           shiny_1.7.1         
+## [130] gtools_3.9.2         nloptr_2.0.0         lifecycle_1.0.1     
+## [133] nlme_3.1-155         jsonlite_1.8.0       carData_3.0-5       
+## [136] viridisLite_0.4.0    fansi_1.0.2          pillar_1.7.0        
+## [139] lattice_0.20-45      loo_2.4.1            fastmap_1.1.0       
+## [142] httr_1.4.2           pkgbuild_1.3.1       survival_3.2-13     
+## [145] glue_1.6.2           xts_0.12.1           diffobj_0.3.5       
+## [148] shinythemes_1.2.0    iterators_1.0.14     class_7.3-20        
+## [151] stringi_1.7.6        sass_0.4.0           future.apply_1.8.1</code></pre>
 <div id="refs" class="references csl-bib-body hanging-indent">
 <div id="ref-Reid2015" class="csl-entry">
 Reid, Rachel E. B. 2015. <span>“A Morphometric Modeling Approach to Distinguishing Among Bobcat, Coyote and Gray Fox Scats.”</span> <em>Wildlife Biology</em> 21 (5): 254–62. <a href="https://doi.org/10.2981/wlb.00105">https://doi.org/10.2981/wlb.00105</a>.

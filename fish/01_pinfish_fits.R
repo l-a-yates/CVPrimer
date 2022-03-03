@@ -8,7 +8,10 @@
 #
 #----------------------------------------------------------------------------
 
-library(tidyverse)
+#library(tidyverse)
+library(dplyr)
+library(purrr)
+library(ggplot2)
 library(future)
 library(fishmethods)
 #library(FlexParamCurve)
@@ -21,9 +24,6 @@ rm(list=ls())
 options(brms.file_refit = "on_change", auto_write = TRUE)
 
 run_date <- "2021_10_07"
-#sv_dir <- paste0("fits_",run_date)
-#if(!dir.exists(sv_dir)) dir.create(sv_dir)
-#sv_dir <- paste0("fits_",run_date)
 
 sv_dir <- paste0("/media/layates/CVprimer/fits_",run_date)
 if(!dir.exists(sv_dir)) dir.create(sv_dir) else message(paste0("Saving results to ",sv_dir,"/"))
@@ -32,19 +32,21 @@ if(!dir.exists(sv_dir)) dir.create(sv_dir) else message(paste0("Saving results t
 # Load and prepare data
 #-------------------------
 
-data(pinfish); pinfish
+data(pinfish); pinfish # 670 obs
 names(pinfish)[1] <- "haul"
 
 # remove samples with undetermined sex
-fishData <- pinfish[pinfish$sex != 0,]
-fishData$sex <- factor(fishData$sex)
+fishData <- pinfish %>% filter(sex != 0) %>% mutate(sex = factor(sex)) %>% as_tibble
 
 # restrict minimum haul size
-fishData %>% group_by(haul) %>% summarise(n = n()) %>% pull(n) %>% table() # examine haul sizes
-min.size <- 5 # set minimum haaul size
+fishData %>% group_by(haul) %>% summarise(n = n()) %>% pull(n) %>% table() 
+min.size <- 5 # set minimum haul size
 fishData <- fishData %>% group_by(haul) %>% filter(n()>= min.size) %>% ungroup
-fishData <- fishData %>% filter(haul != "TBD930066") # remove outlier
-fishData$haul <-  factor(fishData$haul)
+
+# remove outlier
+fishData <- fishData %>% filter(haul != "TBD930066") %>% mutate(haul = factor(haul)) 
+
+fishData 
 
 
 #----------------------
@@ -79,7 +81,8 @@ make_prior <- function(K, t, L, sig_Linf = 10, sig_sex2 = 0.3){
 
 # characterise model set
 models_grid <- expand.grid(fun = c("vB","G","log"), K = c(0,1), L = c(0,1), t  = c(0,1), stringsAsFactors = F) %>% 
-  mutate(name = paste0(fun,".",ifelse(K,"K",""),ifelse(L,"L",""),ifelse(t,"t",""), ifelse(K + L + t, "","0")))
+  mutate(name = paste0(fun,".",ifelse(K,"K",""),ifelse(L,"L",""),ifelse(t,"t",""), ifelse(K + L + t, "","0")),
+         dim = K + L + t)
 
 # fit and save models
 if(F){
@@ -105,7 +108,10 @@ if(F){
 
 # load all models and check convergence
 m.fits <- models_grid %>% pull(name, name = name) %>% map(~ paste0(sv_dir,"/",.x,".rds") %>% readRDS)
-m.fits %>% map_dbl(~ .x %>% rhat() %>% map_dbl(mean) %>% mean)
+
+rhat_initial <- m.fits %>% map_dbl(~ .x %>% rhat() %>% map_dbl(mean) %>% mean)
+rhat_initial %>% saveRDS("files_fish/rhat_initial.rds")
+
 
 # 2 models have convergence issues: refit them with narrower priors
 if(F){
@@ -117,12 +123,15 @@ if(F){
 m.fits$vB.KLt <- readRDS(paste0(sv_dir,"/vB.KLt_update.rds"))
 m.fits$vB.Kt <- readRDS(paste0(sv_dir,"/vB.Kt_update.rds"))
 
+
 # compute PSIS-LOO
 if(F){
   m.loo <- m.fits %>% furrr::future_map(loo)
   #saveRDS(m.loo,paste0(sv_dir,"/m.loo.rds"))
 }
 m.loo <- readRDS(paste0(sv_dir,"/m.loo.rds"))
+m.loo$vB.0$diagnostics$pareto_k
+m.loo %>% map("diagnostics") %>% map("pareto_k") %>% map_dbl(~ sum(.x>0.7))
 
 # compute LOGO CV estimates
 if(F){
@@ -132,42 +141,6 @@ if(F){
 }
 
 m.logo.cv<- readRDS(paste0(sv_dir,"/m.logo.rds"))
-
-
-#------
-# Plots
-#------
-
-# extract pointwise loo estimates
-model_names <- models_grid %>% mutate(dim = K + L + t) %>% arrange(fun,dim) %>% pull(name)
-m.loo.pointwise <- m.loo %>% map("pointwise") %>% map_dfc(~ .x[,"elpd_loo"]) %>% relocate(all_of(model_names))
-
-m.best <- m.loo.pointwise %>% map_dbl(mean) %>% which.max() %>% names
-m.loo.pointwise %>% mutate(across(everything(), ~ .x - m.loo.pointwise[[m.best]])) %>% 
-  {tibble(model = names(.) %>% {factor(., levels = .)},
-          elpd_diff = map_dbl(.,mean),
-          se_diff = map_dbl(.,sd)/sqrt(nrow(.)))} %>% 
-ggplot(aes(model)) +
-  geom_point(aes(y =  elpd_diff))+
-  geom_linerange(aes(ymin = elpd_diff - se_diff, ymax = elpd_diff + se_diff)) +
-  theme_classic()
-
-
-
-# LOGO
-m.logo.pointwise <- m.logo.cv %>% map("pointwise") %>% map_dfc(~ .x[,"elpd_kfold"]) %>% relocate(all_of(model_names))
-m.logo.best <- m.logo.pointwise %>% map_dbl(mean) %>% which.max() %>% names
-
-m.logo.pointwise %>% mutate(across(everything(), ~ .x - m.logo.pointwise[[m.logo.best]])) %>% 
-  {tibble(model = names(.) %>% {factor(., levels = .)},
-          elpd_diff = map_dbl(.,mean),
-          se_diff = map_dbl(.,sd)/sqrt(nrow(.)))} %>% 
-  filter(elpd_diff > -0.03) %>% 
-  ggplot(aes(model)) +
-  geom_point(aes(y =  elpd_diff))+
-  geom_linerange(aes(ymin = elpd_diff - se_diff, ymax = elpd_diff + se_diff)) +
-  theme_classic()
-
 
 
 #-----------------------------------------
